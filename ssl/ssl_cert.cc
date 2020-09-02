@@ -131,6 +131,8 @@
 #include "../crypto/internal.h"
 #include "internal.h"
 
+// TODO(xvzcf): Discuss how to remove this.
+#include "temp_asn1_time_utils.h"
 
 BSSL_NAMESPACE_BEGIN
 
@@ -489,6 +491,72 @@ UniquePtr<EVP_PKEY> ssl_cert_parse_pubkey(const CBS *in) {
   return UniquePtr<EVP_PKEY>(EVP_parse_public_key(&tbs_cert));
 }
 
+static long long cert_parse_notbefore(const CBS *in) {
+  /* From RFC 5280, section 4.1
+   *    Certificate  ::=  SEQUENCE  {
+   *      tbsCertificate       TBSCertificate,
+   *      signatureAlgorithm   AlgorithmIdentifier,
+   *      signatureValue       BIT STRING  }
+
+   * TBSCertificate  ::=  SEQUENCE  {
+   *      version         [0]  EXPLICIT Version DEFAULT v1,
+   *      serialNumber         CertificateSerialNumber,
+   *      signature            AlgorithmIdentifier,
+   *      issuer               Name,
+   *      validity             Validity,
+   *      ... }
+
+   * Validity  ::=  SEQUENCE  {
+   *      notBefore Time,
+   *      notAfter  Time
+   * }
+
+   * Time  ::=  CHOICE {
+   *     utcTime      UTCTime,
+   *     generalTime  GeneralizedTime
+   * } */
+  CBS buf = *in;
+
+  /* Skip to the validity section */
+  CBS toplevel;
+  CBS out_tbs_cert;
+  if (!CBS_get_asn1(&buf, &toplevel, CBS_ASN1_SEQUENCE) ||
+      CBS_len(&buf) != 0 ||
+      !CBS_get_asn1(&toplevel, &out_tbs_cert, CBS_ASN1_SEQUENCE) ||
+      // version
+      !CBS_get_optional_asn1(
+          &out_tbs_cert, NULL, NULL,
+          CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 0) ||
+      // serialNumber
+      !CBS_get_asn1(&out_tbs_cert, NULL, CBS_ASN1_INTEGER) ||
+      // signature algorithm
+      !CBS_get_asn1(&out_tbs_cert, NULL, CBS_ASN1_SEQUENCE) ||
+      // issuer
+      !CBS_get_asn1(&out_tbs_cert, NULL, CBS_ASN1_SEQUENCE)) {
+    return 0;
+  }
+
+  CBS validity, notBefore;
+  if (!CBS_get_asn1(&out_tbs_cert, &validity, CBS_ASN1_SEQUENCE)) {
+    return 0;
+  }
+
+  if (CBS_peek_asn1_tag(&validity, CBS_ASN1_UTCTIME)) {
+    if (!CBS_get_asn1(&validity, &notBefore, CBS_ASN1_UTCTIME)) {
+      return 0;
+    }
+    return asn1_utctime_to_unix_timestamp(CBS_data(&notBefore),
+                                          CBS_len(&notBefore));
+  } else {
+    if (!CBS_get_asn1(&validity, &notBefore, CBS_ASN1_GENERALIZEDTIME)) {
+      return 0;
+    }
+
+    return asn1_generalizedtime_to_unix_timestamp(CBS_data(&notBefore),
+                                                  CBS_len(&notBefore));
+  }
+}
+
 bool ssl_compare_public_and_private_key(const EVP_PKEY *pubkey,
                                         const EVP_PKEY *privkey) {
   if (EVP_PKEY_is_opaque(privkey)) {
@@ -539,11 +607,22 @@ bool ssl_cert_check_private_key(const CERT *cert, const EVP_PKEY *privkey) {
   return ssl_compare_public_and_private_key(pubkey.get(), privkey);
 }
 
-bool ssl_cert_check_key_usage(const CBS *in, enum ssl_key_usage_t bit) {
-  CBS buf = *in;
+enum class CertGetExtResult {
+  Error,
+  Found,
+  NotFound,
+};
 
-  CBS tbs_cert, outer_extensions;
+// cert_get_ext parses a DER-encoded X.509 certificate from |cert| and sets
+// |*out_ext| to contain the contents of the extension from that certificate
+// with the OID |oid|. On success it returns |Found|. If the extension was not
+// found then it returns |NotFound|. If an error was encountered while parsing
+// the certificate then it returns |Error|.
+static CertGetExtResult cert_get_ext(CBS *out_ext, const CBS *cert,
+                                     Span<const uint8_t> oid) {
+  CBS buf = *cert, tbs_cert, outer_extensions;
   int has_extensions;
+
   if (!ssl_cert_skip_to_spki(&buf, &tbs_cert) ||
       // subjectPublicKeyInfo
       !CBS_get_asn1(&tbs_cert, NULL, CBS_ASN1_SEQUENCE) ||
@@ -558,62 +637,72 @@ bool ssl_cert_check_key_usage(const CBS *in, enum ssl_key_usage_t bit) {
       !CBS_get_optional_asn1(
           &tbs_cert, &outer_extensions, &has_extensions,
           CBS_ASN1_CONSTRUCTED | CBS_ASN1_CONTEXT_SPECIFIC | 3)) {
-    OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
-    return false;
+    return CertGetExtResult::Error;
   }
 
   if (!has_extensions) {
-    return true;
+    return CertGetExtResult::NotFound;
   }
 
   CBS extensions;
   if (!CBS_get_asn1(&outer_extensions, &extensions, CBS_ASN1_SEQUENCE)) {
-    OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
-    return false;
+    return CertGetExtResult::Error;
   }
 
   while (CBS_len(&extensions) > 0) {
-    CBS extension, oid, contents;
+    CBS extension, ext_oid, contents;
     if (!CBS_get_asn1(&extensions, &extension, CBS_ASN1_SEQUENCE) ||
-        !CBS_get_asn1(&extension, &oid, CBS_ASN1_OBJECT) ||
+        !CBS_get_asn1(&extension, &ext_oid, CBS_ASN1_OBJECT) ||
         (CBS_peek_asn1_tag(&extension, CBS_ASN1_BOOLEAN) &&
          !CBS_get_asn1(&extension, NULL, CBS_ASN1_BOOLEAN)) ||
         !CBS_get_asn1(&extension, &contents, CBS_ASN1_OCTETSTRING) ||
         CBS_len(&extension) != 0) {
-      OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
-      return false;
+      return CertGetExtResult::Error;
     }
 
-    static const uint8_t kKeyUsageOID[3] = {0x55, 0x1d, 0x0f};
-    if (CBS_len(&oid) != sizeof(kKeyUsageOID) ||
-        OPENSSL_memcmp(CBS_data(&oid), kKeyUsageOID, sizeof(kKeyUsageOID)) !=
-            0) {
-      continue;
+    if (CBS_mem_equal(&ext_oid, oid.data(), oid.size())) {
+      *out_ext = contents;
+      return CertGetExtResult::Found;
     }
-
-    CBS bit_string;
-    if (!CBS_get_asn1(&contents, &bit_string, CBS_ASN1_BITSTRING) ||
-        CBS_len(&contents) != 0) {
-      OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
-      return false;
-    }
-
-    // This is the KeyUsage extension. See
-    // https://tools.ietf.org/html/rfc5280#section-4.2.1.3
-    if (!CBS_is_valid_asn1_bitstring(&bit_string)) {
-      OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
-      return false;
-    }
-
-    if (!CBS_asn1_bitstring_has_bit(&bit_string, bit)) {
-      OPENSSL_PUT_ERROR(SSL, SSL_R_KEY_USAGE_BIT_INCORRECT);
-      return false;
-    }
-
-    return true;
   }
 
-  // No KeyUsage extension found.
+  return CertGetExtResult::NotFound;
+}
+
+bool ssl_cert_check_key_usage(const CBS *in, enum ssl_key_usage_t bit) {
+  CBS contents;
+  static const uint8_t kKeyUsageOID[3] = {0x55, 0x1d, 0x0f};
+  CertGetExtResult result = cert_get_ext(&contents, in, kKeyUsageOID);
+
+  switch (result) {
+    case CertGetExtResult::Found:
+      break;
+    case CertGetExtResult::NotFound:
+      return true;
+    case CertGetExtResult::Error:
+      OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
+      return false;
+  }
+
+  CBS bit_string;
+  if (!CBS_get_asn1(&contents, &bit_string, CBS_ASN1_BITSTRING) ||
+      CBS_len(&contents) != 0) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
+    return false;
+  }
+
+  // This is the KeyUsage extension. See
+  // https://tools.ietf.org/html/rfc5280#section-4.2.1.3
+  if (!CBS_is_valid_asn1_bitstring(&bit_string)) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
+    return false;
+  }
+
+  if (!CBS_asn1_bitstring_has_bit(&bit_string, bit)) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_KEY_USAGE_BIT_INCORRECT);
+    return false;
+  }
+
   return true;
 }
 
@@ -761,8 +850,11 @@ UniquePtr<DC> DC::Dup() {
   }
 
   ret->raw = UpRef(raw);
+  ret->valid_time = valid_time;
   ret->expected_cert_verify_algorithm = expected_cert_verify_algorithm;
   ret->pkey = UpRef(pkey);
+  ret->algorithm = algorithm;
+  ret->signature = UpRef(signature);
   return ret;
 }
 
@@ -777,13 +869,11 @@ UniquePtr<DC> DC::Parse(CRYPTO_BUFFER *in, uint8_t *out_alert) {
   dc->raw = UpRef(in);
 
   CBS pubkey, deleg, sig;
-  uint32_t valid_time;
-  uint16_t algorithm;
   CRYPTO_BUFFER_init_CBS(dc->raw.get(), &deleg);
-  if (!CBS_get_u32(&deleg, &valid_time) ||
+  if (!CBS_get_u32(&deleg, &dc->valid_time) ||
       !CBS_get_u16(&deleg, &dc->expected_cert_verify_algorithm) ||
       !CBS_get_u24_length_prefixed(&deleg, &pubkey) ||
-      !CBS_get_u16(&deleg, &algorithm) ||
+      !CBS_get_u16(&deleg, &dc->algorithm) ||
       !CBS_get_u16_length_prefixed(&deleg, &sig) ||
       CBS_len(&deleg) != 0) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
@@ -793,6 +883,13 @@ UniquePtr<DC> DC::Parse(CRYPTO_BUFFER *in, uint8_t *out_alert) {
 
   dc->pkey.reset(EVP_parse_public_key(&pubkey));
   if (dc->pkey == nullptr) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
+    *out_alert = SSL_AD_DECODE_ERROR;
+    return nullptr;
+  }
+
+  dc->signature.reset(CRYPTO_BUFFER_new(CBS_data(&sig), CBS_len(&sig), NULL));
+  if (dc->signature == nullptr) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
     *out_alert = SSL_AD_DECODE_ERROR;
     return nullptr;
@@ -814,13 +911,13 @@ static bool ssl_can_serve_dc(const SSL_HANDSHAKE *hs) {
   }
 
   // Check that 1.3 or higher has been negotiated.
-  const DC *dc = cert->dc.get();
   assert(hs->ssl->s3->have_version);
   if (ssl_protocol_version(hs->ssl) < TLS1_3_VERSION) {
     return false;
   }
 
   // Check that the DC signature algorithm is supported by the peer.
+  const DC *dc = cert->dc.get();
   Span<const uint16_t> peer_sigalgs = hs->peer_delegated_credential_sigalgs;
   for (uint16_t peer_sigalg : peer_sigalgs) {
     if (dc->expected_cert_verify_algorithm == peer_sigalg) {
@@ -830,12 +927,44 @@ static bool ssl_can_serve_dc(const SSL_HANDSHAKE *hs) {
   return false;
 }
 
+bool ssl_cert_check_delegation_usage(const CBS *in) {
+  CBS contents;
+
+  // 1.3.6.1.4.1.44363.44, defined in draft-ietf-tls-subcerts-09.
+  static const uint8_t kDelegationUsageOID[] = {
+      0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0xda, 0x4b, 0x2c,
+  };
+
+  CertGetExtResult result = cert_get_ext(&contents, in, kDelegationUsageOID);
+  switch (result) {
+    case CertGetExtResult::Found:
+      return true;
+    case CertGetExtResult::NotFound:
+      return false;
+    case CertGetExtResult::Error:
+      OPENSSL_PUT_ERROR(SSL, SSL_R_CANNOT_PARSE_LEAF_CERT);
+      return false;
+  }
+  return false;
+}
+
 bool ssl_signing_with_dc(const SSL_HANDSHAKE *hs) {
-  // As of draft-ietf-tls-subcert-03, only the server may use delegated
-  // credentials to authenticate itself.
+  // Server-side authentication of the client is
+  // currently not implemented.
   return hs->ssl->server &&
          hs->delegated_credential_requested &&
          ssl_can_serve_dc(hs);
+}
+
+bool ssl_verifying_with_dc(const SSL_HANDSHAKE *hs) {
+  // Server-side authentication of the client is
+  // currently not implemented.
+  if (!hs->ssl->server &&
+      hs->config->delegated_credential_enabled &&
+      hs->new_session->delegated_credential != nullptr) {
+    return true;
+  }
+  return false;
 }
 
 static int cert_set_dc(CERT *cert, CRYPTO_BUFFER *const raw, EVP_PKEY *privkey,
@@ -871,6 +1000,132 @@ static int cert_set_dc(CERT *cert, CRYPTO_BUFFER *const raw, EVP_PKEY *privkey,
 
   return 1;
 }
+
+// build_dc_message writes to |message| the message used by the end-entity
+// certificate to compute the DC signature. The message consists of the
+// end-entity certificate |leaf|, the DC public key, and the DC parameters.
+static int build_dc_message(CBB *message,
+                            const DC *dc,
+                            const CRYPTO_BUFFER *leaf) {
+  // The signature message begins with the octet 32 (0x20) repeated 64 times.
+  uint8_t buf[64];
+  OPENSSL_memset(buf, 0x20, sizeof(buf));
+  if (!CBB_add_bytes(message, buf, sizeof(buf))) {
+    return 0;
+  }
+
+  // Server-side authentication of the client is
+  // currently not implemented.
+  static const char kServerContext[] = "TLS, server delegated credentials";
+
+  CBB pkey_encoded;
+  if (!CBB_add_bytes(message,
+                     (const uint8_t *)kServerContext,
+                     sizeof(kServerContext)) ||
+      !CBB_add_bytes(message,
+                     CRYPTO_BUFFER_data(leaf),
+                     CRYPTO_BUFFER_len(leaf)) ||
+      !CBB_add_u32(message, dc->valid_time) ||
+      !CBB_add_u16(message, dc->expected_cert_verify_algorithm) ||
+      !CBB_init(&pkey_encoded, 65) ||
+      !EVP_marshal_public_key(&pkey_encoded, dc->pkey.get()) ||
+      !CBB_add_u24(message, CBB_len(&pkey_encoded)) ||
+      !CBB_add_bytes(message,
+                     CBB_data(&pkey_encoded),
+                     CBB_len(&pkey_encoded)) ||
+      !CBB_add_u16(message, dc->algorithm)) {
+    return 0;
+  }
+
+  return 1;
+}
+
+bool ssl_dc_verify(const SSL_HANDSHAKE *hs) {
+  const DC *dc = hs->peer_dc.get();
+  assert(dc);
+
+  const CRYPTO_BUFFER *raw_leaf_buf =
+      sk_CRYPTO_BUFFER_value(hs->new_session->certs.get(), 0);
+  assert(raw_leaf_buf);
+
+  CBS raw_leaf;
+  CRYPTO_BUFFER_init_CBS(raw_leaf_buf, &raw_leaf);
+
+  long long notBefore = cert_parse_notbefore(&raw_leaf);
+  if (notBefore == 0) {
+    return false;
+  }
+
+  OPENSSL_timeval now;
+  ssl_get_current_time(hs->ssl, &now);
+
+  // Verify that the current time is within the validity interval of the
+  // credential. We want that |not_before| is greater than or equal to the
+  // current time minus the credential's validity time.
+  time_t cmp_time = now.tv_sec - static_cast<uint64_t>(dc->valid_time);
+  if (notBefore <= cmp_time) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_DELEGATED_CREDENTIAL_EXPIRED);
+    return false;
+  }
+
+  // Verify that the credential's remaining validity:
+  // (|not_before| + |valid_time|) - |now| is no longer than the
+  // maximum 7 days permitted by the spec.
+  //
+  // Thus, we want |not_before| <= |cmp_time| + the maximum permitted TTL.
+  static uint64_t kMaxTTL = 7 * 24 * 60 * 60;
+  cmp_time += kMaxTTL;
+  if (notBefore > cmp_time) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_DELEGATED_CREDENTIAL);
+    return false;
+  }
+
+  // Verify that DelegatedCredential.cred.expected_cert_verify_algorithm matches
+  // the scheme indicated in the peer's CertificateVerify.algorithm.
+  uint16_t peer_sigalg = hs->new_session->peer_signature_algorithm;
+  if (dc->expected_cert_verify_algorithm != peer_sigalg) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_DELEGATED_CREDENTIAL);
+    return false;
+  }
+
+  // Verify that the end-entity certificate can be used with the delegated
+  // credential extension. This has two parts: first, the certificate must have
+  // the DelegationUsage extension defined in the standard; two, it must have
+  // the digitalSignature KeyUsage enabled. The second condition is checked by
+  // |tls13_process_certificate|.
+  if (!ssl_cert_check_delegation_usage(&raw_leaf)) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_DELEGATED_CREDENTIAL);
+    return false;
+  }
+
+  // Use the public key in the server's end-entity certificate to verify the
+  // signature of the credential.
+  //
+  // First, build the message whose signature is to be verified.
+  CBB message;
+  CBB_init(&message, 512);
+  if (!build_dc_message(&message, dc, raw_leaf_buf)) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_INTERNAL_ERROR);
+    return false;
+  }
+
+  // Use DelegatedCredential.algorithm as the algorithm to verify the signature.
+  const EVP_MD *digest = SSL_get_signature_algorithm_digest(dc->algorithm);
+
+  // Verify the delegated credential message using the leaf cert public key.
+  UniquePtr<EVP_PKEY> leaf_pubkey = ssl_cert_parse_pubkey(&raw_leaf);
+  EVP_PKEY_CTX *pctx;
+  EVP_MD_CTX ctx;
+  EVP_MD_CTX_init(&ctx);
+  EVP_DigestVerifyInit(&ctx, &pctx, digest, NULL, leaf_pubkey.get());
+  int result = EVP_DigestVerify(&ctx,
+    CRYPTO_BUFFER_data(dc->signature.get()),
+    CRYPTO_BUFFER_len(dc->signature.get()),
+    CBB_data(&message), CBB_len(&message));
+
+  return !!result;
+}
+
 
 BSSL_NAMESPACE_END
 

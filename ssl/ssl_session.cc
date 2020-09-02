@@ -235,6 +235,8 @@ UniquePtr<SSL_SESSION> SSL_SESSION_dup(SSL_SESSION *session, int dup_flags) {
   new_session->ocsp_response = UpRef(session->ocsp_response);
   new_session->signed_cert_timestamp_list =
       UpRef(session->signed_cert_timestamp_list);
+  new_session->delegated_credential =
+      UpRef(session->delegated_credential);
 
   OPENSSL_memcpy(new_session->peer_sha256, session->peer_sha256,
                  SHA256_DIGEST_LENGTH);

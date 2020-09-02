@@ -561,6 +561,7 @@ ssl_ctx_st::ssl_ctx_st(const SSL_METHOD *ssl_method)
       quiet_shutdown(false),
       ocsp_stapling_enabled(false),
       signed_cert_timestamps_enabled(false),
+      delegated_credential_enabled(false),
       channel_id_enabled(false),
       grease_enabled(false),
       allow_unknown_alpn_protos(false),
@@ -709,6 +710,7 @@ SSL *SSL_new(SSL_CTX *ctx) {
   ssl->config->signed_cert_timestamps_enabled =
       ctx->signed_cert_timestamps_enabled;
   ssl->config->ocsp_stapling_enabled = ctx->ocsp_stapling_enabled;
+  ssl->config->delegated_credential_enabled = ctx->delegated_credential_enabled;
   ssl->config->handoff = ctx->handoff;
   ssl->quic_method = ctx->quic_method;
 
@@ -2129,6 +2131,17 @@ void SSL_enable_ocsp_stapling(SSL *ssl) {
   ssl->config->ocsp_stapling_enabled = true;
 }
 
+void SSL_CTX_enable_delegated_credentials(SSL_CTX *ctx, int enabled) {
+    ctx->delegated_credential_enabled = !!enabled;
+}
+
+void SSL_enable_delegated_credentials(SSL *ssl, int enabled) {
+  if (!ssl->config) {
+    return;
+  }
+  ssl->config->delegated_credential_enabled = !!enabled;
+}
+
 void SSL_get0_signed_cert_timestamp_list(const SSL *ssl, const uint8_t **out,
                                          size_t *out_len) {
   SSL_SESSION *session = SSL_get_session(ssl);
@@ -2153,6 +2166,19 @@ void SSL_get0_ocsp_response(const SSL *ssl, const uint8_t **out,
 
   *out = CRYPTO_BUFFER_data(session->ocsp_response.get());
   *out_len = CRYPTO_BUFFER_len(session->ocsp_response.get());
+}
+
+void SSL_get0_delegated_credential(const SSL *ssl, const uint8_t **out,
+                                   size_t *out_len) {
+  SSL_SESSION *session = SSL_get_session(ssl);
+  if (ssl->server || !session || !session->delegated_credential) {
+    *out_len = 0;
+    *out = NULL;
+    return;
+  }
+
+  *out = CRYPTO_BUFFER_data(session->delegated_credential.get());
+  *out_len = CRYPTO_BUFFER_len(session->delegated_credential.get());
 }
 
 int SSL_set_tlsext_host_name(SSL *ssl, const char *name) {

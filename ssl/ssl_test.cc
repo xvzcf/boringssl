@@ -6589,4 +6589,336 @@ TEST(SSLTest, BIO) {
 }
 
 }  // namespace
+
+// Delegated credentials.
+// GetTestDelegationCertificate returns the certificate that produced the test
+// DCs below. It is a self-signed certificate and has the  DelegationUsage
+// extension as defined in draft-ietf-tls-subcerts-02.
+static bssl::UniquePtr<X509> GetTestDelegationCertificate() {
+  static const char kCertPEM[] =
+      "-----BEGIN CERTIFICATE-----\n"
+      "MIIBezCCASKgAwIBAgIRAJZxpkATSkXtaYuKkmP/7YQwCgYIKoZIzj0EAwIwFDES\n"
+      "MBAGA1UEChMJQWNtZSBJbmMuMB4XDTIwMDcwMTEzMDUzM1oXDTIwMDcwODEzMDUz\n"
+      "M1owFDESMBAGA1UEChMJQWNtZSBJbmMuMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcD\n"
+      "QgAEJYa2xzCGsR//gL6mdUxMr+DpSrrsputAPiTSrnBOvyfCw1aY3fq+tlRS9WbV\n"
+      "1zXEQKItVNf7ofFSm2BYVXxOxqNVMFMwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQM\n"
+      "MAoGCCsGAQUFBwMBMAwGA1UdEwEB/wQCMAAwDwYDVR0RBAgwBocEfwAAATANBgkr\n"
+      "BgEEAYLaSywEADAKBggqhkjOPQQDAgNHADBEAiAWufQRTjgJaOYn3KBmvkNUwLyp\n"
+      "66vHmWi7L52EDCUGYwIgawvUo3EplSqfdTrYM1YbjuN7aiyqeljkE5G0hihUh0w=\n"
+      "-----END CERTIFICATE-----\n";
+  bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(kCertPEM, strlen(kCertPEM)));
+  return bssl::UniquePtr<X509>(
+      PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
+}
+
+// GetTestDelegationKey returns the private key corresponding to the test
+// delegation certificate.
+static bssl::UniquePtr<EVP_PKEY> GetTestDelegationKey() {
+  static const char kKeyPEM[] =
+      "-----BEGIN EC PRIVATE KEY-----\n"
+      "MHcCAQEEIP7E4tjaGNYrrwQq52g/P409lF0HFabPoAd2gHzDUdWCoAoGCCqGSM49\n"
+      "AwEHoUQDQgAEJYa2xzCGsR//gL6mdUxMr+DpSrrsputAPiTSrnBOvyfCw1aY3fq+\n"
+      "tlRS9WbV1zXEQKItVNf7ofFSm2BYVXxOxg==\n"
+      "-----END EC PRIVATE KEY-----\n";
+  bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(kKeyPEM, strlen(kKeyPEM)));
+  return bssl::UniquePtr<EVP_PKEY>(
+      PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
+}
+
+// The notBefore field (in Unix time) of the certificate output by
+// |GetTestDelegationCertificate|. This is used as the current time for the
+// purpose of testing the handshake with the delegated credentials extension.
+static uint64_t kDelegationCertNotBefore = 1593608733;
+
+// DCTestTimeCallback sets the caller's current time for the purposes of running
+// the DC tests. All test DCs should be valid at this time.
+static void DCTestTimeCallback(const SSL *ssl, timeval *out_clock) {
+  out_clock->tv_sec = kDelegationCertNotBefore;
+  out_clock->tv_usec = 0;
+}
+
+// DCTestBadTimeCallback sets the caller's current time to the exact moment the
+// test DCs expire. All test DCs should be invalid at this time.
+static void DCTestBadTimeCallback(const SSL *ssl, timeval *out_clock) {
+  // The longest period for which a DC may be valid.
+  static uint32_t kDCMaxTTL = 60 * 60 * 24 * 7;
+  out_clock->tv_sec = kDelegationCertNotBefore + (uint64_t)kDCMaxTTL;
+  out_clock->tv_usec = 0;
+}
+
+// Base64-encoded DCs for testing. The raw DCs are in the wire format defined in
+// the specification.
+static const char *kDCs[] = {
+    // p256
+    "AAk6gAQDAABbMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3d+Pzf7NWkggc7nA"
+    "aaGilBsaMIRkBPQmFsefWn9rBNyeDW2BMFZ6mV080ymb7FM5+Da1cdjJRPifS2Ag"
+    "ZKesmgQDAEgwRgIhAMIU+EDJFpqdTq/1dGPjk8xJd+ODjTnjlcyR1A271HczAiEA"
+    "pYW11X2/nCu4VE/saC/ufvIMw1ICVlCVfhwxait68sw=",
+    // p521
+    "AAk6gAYDAACeMIGbMBAGByqGSM49AgEGBSuBBAAjA4GGAAQBW1wDJ64H4/8yhITm"
+    "GHcYw/61R29wGY0I9ZoeQbQJWqp4dLaPW1cxO92gauXquWIw13UG1nRpoE5dVW5g"
+    "orbYFh4BqrL9opUBBBtY17ZS6weOGkNSmNw5r3Y1T4xA0QhflipvYOehF3BE1uZD"
+    "i7246NDFCci8i1mXNpTu0VD+L5N/UwkEAwBGMEQCIGb3a+0emini37x8s+Kk5z/H"
+    "ZtMPrKZITvLuqOwr7eEQAiBioJSh1+ZQMFcKolH+lKkjmB1OuEJ94K38FIRsPgA8"
+    "ZQ==",
+    // p384
+    "AAk6gAUDAAB4MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEIU3nnaepGRVE0B03mZpC"
+    "p6pKFemLkpvTcJY2DRS/DWTy3MSvhLV2G6wthE6aWnWbOkjv+bvgv6jS2NOtYTFb"
+    "xGcTJEyoyYRNxl2fRUWFsQW4z4LCCWseK7IO3R6LKmnmBAMARjBEAiAHQkPswEN6"
+    "0b1Aun8t6ivnGJFOx6lOCknbeO7y2DErbQIgaq1GUrcGF79hIG/XO4MTjinTp0ai"
+    "PzmH7d0v9UHNP4c=",
+    // ed25519
+    "AAk6gAgHAAAsMCowBQYDK2VwAyEAfNmwkbUcG0OgeI8mjmvEob+mEhMmdoRvn7yA"
+    "o1vOui4EAwBGMEQCIByJ7WXoTUXaIK2P99WyE0ZGHz2fCIaxsQ1LUyZlqqMjAiBg"
+    "KOC3Yi3ThHvk5Kbk0NYz8GPokcsCIzRUCJ43O2meFQ==",
+};
+
+// PEM-encoded private keys corresponding to the test DCs.
+static const char *kDCKeys [] {
+    // p256
+    "-----BEGIN EC PRIVATE KEY-----\n"
+    "MHcCAQEEIOXFPRlfeZyHWksUz/WpNQ2ADK+grA9AqoPcnk6Ti7cyoAoGCCqGSM49\n"
+    "AwEHoUQDQgAE3d+Pzf7NWkggc7nAaaGilBsaMIRkBPQmFsefWn9rBNyeDW2BMFZ6\n"
+    "mV080ymb7FM5+Da1cdjJRPifS2AgZKesmg==\n"
+    "-----END EC PRIVATE KEY-----\n",
+    // p521
+    "-----BEGIN EC PRIVATE KEY-----\n"
+    "MIHcAgEBBEIB1wzFuM7Q49mKFRVwROhZxJa08QJgkr/lPTBtr3Vu//r2BbCcL2e9\n"
+    "3Tm3ImfyzVcxRAeFG3EsZwEPGPGFdMoxNUagBwYFK4EEACOhgYkDgYYABAFbXAMn\n"
+    "rgfj/zKEhOYYdxjD/rVHb3AZjQj1mh5BtAlaqnh0to9bVzE73aBq5eq5YjDXdQbW\n"
+    "dGmgTl1VbmCittgWHgGqsv2ilQEEG1jXtlLrB44aQ1KY3DmvdjVPjEDRCF+WKm9g\n"
+    "56EXcETW5kOLvbjo0MUJyLyLWZc2lO7RUP4vk39TCQ==\n"
+    "-----END EC PRIVATE KEY-----\n",
+    // p384
+    "-----BEGIN EC PRIVATE KEY-----\n"
+    "MIGkAgEBBDA3FsT2o+F530QPzoOyHEptRzBKWG//f9LQ8rVxsVtVVPe0PICBDdgg\n"
+    "EbncOYo8Dx2gBwYFK4EEACKhZANiAAQhTeedp6kZFUTQHTeZmkKnqkoV6YuSm9Nw\n"
+    "ljYNFL8NZPLcxK+EtXYbrC2ETppadZs6SO/5u+C/qNLY061hMVvEZxMkTKjJhE3G\n"
+    "XZ9FRYWxBbjPgsIJax4rsg7dHosqaeY=\n"
+    "-----END EC PRIVATE KEY-----\n",
+    // ed25519
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MC4CAQAwBQYDK2VwBCIEIMhN5dZ72hErCLe8j9ogbfoH3Zo9pn7T1qtSmEKPQUEP\n"
+    "-----END PRIVATE KEY-----\n",
+};
+
+// DCTest stores the parameters of a test handshake involving a DC.
+struct DCTest {
+  const char *name;
+  bool do_client_dc; // Whether the client will indicate support
+  bool do_server_dc; // Whether the server will send a DC
+  bool do_fallback; // Whether the server will configure a cert private key
+  bool bad_dc; // Use an invalid DC
+  bool expired_dc; // Use an expired DC
+  bool expect_success;
+  bool expect_dc;
+  uint16_t client_version; // Max. protocol version that the client supports
+  const char *b64_dc; // The base64-encoded DC
+  const char *pem_key; // The PEM-encoded DC private key
+};
+
+// Test cases.
+static DCTest kDCTests[] = {
+  {
+    "p256",
+    true /* do_client_dc */,    true /* do_server_dc */,
+    false /* do_fallback */,    false /* bad_dc */,
+    false /* expired_dc */,
+    true /* expect_success */,  true /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[0], kDCKeys[0],
+  },
+  {
+    "p521",
+    true /* do_client_dc */,    true /* do_server_dc */,
+    false /* do_fallback */,    false /* bad_dc */,
+    false /* expired_dc */,
+    true /* expect_success */,  true /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[1], kDCKeys[1],
+  },
+  {
+    "ed25519",
+    true /* do_client_dc */,    true /* do_server_dc */,
+    false /* do_fallback */,    false /* bad_dc */,
+    false /* expired_dc */,
+    true /* expect_success */,  true /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[3], kDCKeys[3],
+  },
+  {
+    "unsupported_sigalg",
+    true /* do_client_dc */,    true /* do_server_dc */,
+    true /* do_fallback */,     false /* bad_dc */,
+    false /* expired_dc */,
+    true /* expect_success */,  false /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[2], kDCKeys[2],
+  },
+  {
+    "unsupported_version",
+    true /* do_client_dc */,    true /* do_server_dc */,
+    true /* do_fallback */,     false /* bad_dc */,
+    false /* expired_dc */,
+    true /* expect_success */,  false /* expect_dc */,
+    TLS1_2_VERSION /* client version */,
+    kDCs[0], kDCKeys[0],
+  },
+  {
+    "bad_dc",
+    true /* do_client_dc */,    true /* do_server_dc */,
+    true /* do_fallback */,     true /* bad_dc */,
+    false /* expired_dc */,
+    false /* expect_success */, true /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[0], kDCKeys[0],
+  },
+  {
+    "expired_dc",
+    true /* do_client_dc */,    true /* do_server_dc */,
+    true /* do_fallback */,     false /* bad_dc */,
+    true /* expired_dc */,
+    false /* expect_success */, true /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[0], kDCKeys[0],
+  },
+  {
+    "no_client_indication",
+    false /* do_client_dc */,   true /* do_server_dc */,
+    true  /* do_fallback */,    false /* bad_dc */,
+    false /* expired_dc */,
+    true /* expect_success */, false /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[0], kDCKeys[0],
+  },
+  {
+    "no_server_support",
+    true /* do_client_dc */,    false /* do_server_dc */,
+    true /* do_fallback */,     false /* bad_dc */,
+    false /* expired_dc */,
+    true /* expect_success */,  false /* expect_dc */,
+    TLS1_3_VERSION /* client version */,
+    kDCs[0], kDCKeys[0],
+  },
+};
+
+// test_dc_cert_cb configures the certificate and delegated credential used in a
+// connection attempt. It is called by |SSL_set_cert_cb|. The data pointed to by
+// |arg| is expected to be a |DCTest|.
+//
+// NOTE: What's the right callback for configuring DCs? To pick a DC, we need to
+// know which version was negotiated and which signature schemes the client
+// supports. We could use the |SSL_set_select_cert_cb| and parse |peer_sigalgs|
+// from the ClientHello. The problem here is that, when this callback is called,
+// the protocol version hasn't been determined. The appropriate function to use
+// is |SSL_set_cert_cb|, since this sets a callback that is called after the
+// protocol version is picked. This callback can also use
+// |SSL_get0_peer_verify_algorithms| to determine which signature algorithms are
+// supported by the client.
+static int DCTestSetCertCallback(SSL *ssl, void *arg) {
+  DCTest &t = *reinterpret_cast<DCTest *>(arg);
+  // Set the certificate.
+  bssl::UniquePtr<X509> cert = GetTestDelegationCertificate();
+  if (!cert || !SSL_use_certificate(ssl, cert.get())) {
+    return 0;
+  }
+
+  // Use the delegation private key as the certificate private key. This is our
+  // fallback in case a DC doesn't get negotiated.
+  if (t.do_fallback) {
+    bssl::UniquePtr<EVP_PKEY> key = GetTestDelegationKey();
+    if (!key || !SSL_use_PrivateKey(ssl, key.get())) {
+      return 0;
+    }
+  }
+
+  // Load the raw DC.
+  std::vector<uint8_t> raw_dc;
+  if (!DecodeBase64(&raw_dc, t.b64_dc)) {
+    return 0;
+  }
+
+  if (t.bad_dc) {
+    // The test involves an invalid DC, so invert one of the bytes.
+    raw_dc[0] ^= 0xff;
+  }
+
+  bssl::UniquePtr<CRYPTO_BUFFER> dc(
+      CRYPTO_BUFFER_new(raw_dc.data(), raw_dc.size(), nullptr));
+  // Load the DC private key.
+  bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(t.pem_key, strlen(t.pem_key)));
+  bssl::UniquePtr<EVP_PKEY> sk(
+      PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
+  if (!sk) {
+    return 0;
+  }
+
+  // Configure the SSL to use a DC if requested by the client.
+  if (t.do_server_dc &&
+      !SSL_set1_delegated_credential(ssl, dc.get(), sk.get(), nullptr)) {
+    return (int)t.do_fallback; // Fail open if there's a fallback.
+  }
+
+  // NOTE: At this point the SSL state is configured to use the DC private key
+  // for the handshake, but this doesn't guarantee that the DC will be used. If
+  // the client doesn't request a DC, and we're not using the delegation key as
+  // a fallback, then there will be no private key for the connection.
+  return 1;
+}
+
+// Try the handshake with delegated credentials under various conditions.
+TEST(SSLTest, DelegatedCredential) {
+  bssl::UniquePtr<SSL_CTX> client_ctx(SSL_CTX_new(TLS_method()));
+  bssl::UniquePtr<SSL_CTX> server_ctx(SSL_CTX_new(TLS_method()));
+  ASSERT_TRUE(client_ctx);
+  ASSERT_TRUE(server_ctx);
+
+  // Set the client's verification algorithm preferences.
+  static const size_t kClientSigAlgsLen = 3;
+  static const uint16_t kClientSigAlgs [] = {
+    SSL_SIGN_ED25519,
+    SSL_SIGN_ECDSA_SECP256R1_SHA256,
+    SSL_SIGN_ECDSA_SECP521R1_SHA512,
+  };
+  ASSERT_TRUE(SSL_CTX_set_verify_algorithm_prefs(client_ctx.get(),
+                                                 kClientSigAlgs,
+                                                 kClientSigAlgsLen));
+
+  // Enable support for TLS 1.3 on the client and server. Note that this
+  // extension is not defined for use in TLS 1.2 or below.
+  ASSERT_TRUE(SSL_CTX_set_max_proto_version(client_ctx.get(), TLS1_3_VERSION));
+  ASSERT_TRUE(SSL_CTX_set_max_proto_version(server_ctx.get(), TLS1_3_VERSION));
+
+  uint8_t *dc;
+  size_t dc_len;
+  bssl::UniquePtr<SSL> client, server;
+  for (DCTest &t : kDCTests) {
+    // If the test involves an expired DC, then set the clock ahead.
+    if (t.expired_dc) {
+      SSL_CTX_set_current_time_cb(client_ctx.get(), DCTestBadTimeCallback);
+    } else {
+      SSL_CTX_set_current_time_cb(client_ctx.get(), DCTestTimeCallback);
+    }
+
+    // Set up the client and server state.
+    ASSERT_TRUE(ConnectClientAndServer(&client, &server, client_ctx.get(),
+                                       server_ctx.get(), ClientConfig(),
+                                       false /* don't handshake yet */));
+
+    // Set the maximum version supported by the client for this handshake.
+    ASSERT_TRUE(SSL_set_max_proto_version(client.get(), t.client_version));
+
+    // Enable/disable DCs for this handshake.
+    SSL_enable_delegated_credentials(client.get(), (int)t.do_client_dc);
+    SSL_set_cert_cb(server.get(), DCTestSetCertCallback, &t);
+
+    // Execute the handshake and test for success.
+    EXPECT_EQ(t.expect_success, CompleteHandshakes(client.get(), server.get()))
+      << "Test case: " << t.name;
+
+    // Test whether a delegated credential was used.
+    SSL_get0_delegated_credential(client.get(), (const uint8_t **)&dc, &dc_len);
+    EXPECT_EQ(t.expect_dc, dc != NULL) << "Test case: " << t.name;
+  }
+}
 BSSL_NAMESPACE_END

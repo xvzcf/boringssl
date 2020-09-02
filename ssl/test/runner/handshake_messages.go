@@ -1060,7 +1060,8 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 				}
 			}
 		case extensionDelegatedCredentials:
-			if len(body) != 0 {
+			var delegatedCredentialAlgorithms []signatureAlgorithm
+			if !parseSignatureAlgorithms(&body, &delegatedCredentialAlgorithms, false) || len(body) != 0 {
 				return false
 			}
 			m.delegatedCredentials = true

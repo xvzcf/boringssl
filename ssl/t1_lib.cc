@@ -132,7 +132,6 @@
 #include "../crypto/internal.h"
 #include "internal.h"
 
-
 BSSL_NAMESPACE_BEGIN
 
 static bool ssl_check_clienthello_tlsext(SSL_HANDSHAKE *hs);
@@ -2979,6 +2978,20 @@ static bool ext_quic_transport_params_add_serverhello_legacy(SSL_HANDSHAKE *hs,
 
 static bool ext_delegated_credential_add_clienthello(SSL_HANDSHAKE *hs,
                                                      CBB *out) {
+  if (hs->max_version < TLS1_3_VERSION ||
+      !hs->config->delegated_credential_enabled) {
+    return true;
+  }
+
+  CBB contents, dc_sigalgs_cbb;
+  if (!CBB_add_u16(out, TLSEXT_TYPE_delegated_credential) ||
+      !CBB_add_u16_length_prefixed(out, &contents) ||
+      !CBB_add_u16_length_prefixed(&contents, &dc_sigalgs_cbb) ||
+      !tls12_add_verify_sigalgs(hs, &dc_sigalgs_cbb) ||
+      !CBB_flush(out)) {
+    return false;
+  }
+
   return true;
 }
 

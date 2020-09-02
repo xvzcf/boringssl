@@ -363,7 +363,7 @@ func createDelegatedCredential(config delegatedCredentialConfig, parentDER []byt
 		return nil, nil, fmt.Errorf("delegated credentials require TLS 1.3")
 	}
 
-	// https://tools.ietf.org/html/draft-ietf-tls-subcerts-03#section-3
+	// https://tools.ietf.org/html/draft-ietf-tls-subcerts-09#section-4
 	dc = append(dc, byte(lifetimeSecs>>24), byte(lifetimeSecs>>16), byte(lifetimeSecs>>8), byte(lifetimeSecs))
 	dc = append(dc, byte(expectedAlgo>>8), byte(expectedAlgo))
 

@@ -192,6 +192,7 @@ bool tls13_process_certificate(SSL_HANDSHAKE *hs, const SSLMessage &msg,
 
   const bool retain_sha256 =
       ssl->server && hs->config->retain_only_sha256_of_client_certs;
+  UniquePtr<DC> dc;
   UniquePtr<EVP_PKEY> pkey;
   while (CBS_len(&certificate_list) > 0) {
     CBS certificate, extensions;
@@ -235,11 +236,12 @@ bool tls13_process_certificate(SSL_HANDSHAKE *hs, const SSLMessage &msg,
     }
 
     // Parse out the extensions.
-    bool have_status_request = false, have_sct = false;
-    CBS status_request, sct;
+    bool have_status_request = false, have_sct = false, have_dc = false;
+    CBS status_request, sct, deleg;
     const SSL_EXTENSION_TYPE ext_types[] = {
         {TLSEXT_TYPE_status_request, &have_status_request, &status_request},
         {TLSEXT_TYPE_certificate_timestamp, &have_sct, &sct},
+        {TLSEXT_TYPE_delegated_credential, &have_dc, &deleg},
     };
 
     uint8_t alert = SSL_AD_DECODE_ERROR;
@@ -301,6 +303,36 @@ bool tls13_process_certificate(SSL_HANDSHAKE *hs, const SSLMessage &msg,
         }
       }
     }
+
+    if (have_dc) {
+      // As of draft-ietf-tls-subcerts-03, only the server may authenticate
+      // itself with a delegated credential. TODO(xvzcf): Add client auth support.
+      if (ssl->server || !hs->config->delegated_credential_enabled) {
+        OPENSSL_PUT_ERROR(SSL, SSL_R_UNEXPECTED_EXTENSION);
+        ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_UNSUPPORTED_EXTENSION);
+        return 0;
+      }
+
+      uint8_t out_alert;
+      dc = DC::Parse(CRYPTO_BUFFER_new_from_CBS(&deleg, ssl->ctx->pool), &out_alert);
+
+      if (dc == nullptr) {
+        OPENSSL_PUT_ERROR(SSL, SSL_R_ERROR_PARSING_EXTENSION);
+        ssl_send_alert(ssl, SSL3_AL_FATAL, out_alert);
+        return 0;
+      }
+
+      if (sk_CRYPTO_BUFFER_num(certs.get()) == 1) {
+        hs->new_session->delegated_credential.reset(
+            CRYPTO_BUFFER_new_from_CBS(&deleg, ssl->ctx->pool));
+        if (hs->new_session->delegated_credential == nullptr) {
+          ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
+          return 0;
+        }
+        hs->peer_dc = std::move(dc);
+      }
+    }
+
   }
 
   // Store a null certificate list rather than an empty one if the peer didn't
@@ -311,6 +343,14 @@ bool tls13_process_certificate(SSL_HANDSHAKE *hs, const SSLMessage &msg,
 
   hs->peer_pubkey = std::move(pkey);
   hs->new_session->certs = std::move(certs);
+
+  // If the host indicated support for delegated credentials and one was sent by
+  // the peer as an extension to its end-entity certificate, then the peer will
+  // use the private key of the delegated credential as its private key for the
+  // handshake.
+  if (ssl_verifying_with_dc(hs)) {
+    hs->peer_pubkey = UpRef(hs->peer_dc->pkey);
+  }
 
   if (!ssl->ctx->x509_method->session_cache_objects(hs->new_session.get())) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
@@ -360,6 +400,12 @@ bool tls13_process_certificate_verify(SSL_HANDSHAKE *hs, const SSLMessage &msg) 
     return false;
   }
   hs->new_session->peer_signature_algorithm = signature_algorithm;
+
+  if (ssl_verifying_with_dc(hs) && !ssl_dc_verify(hs)) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_CERTIFICATE_VERIFY_FAILED);
+    ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+    return 0;
+  }
 
   Array<uint8_t> input;
   if (!tls13_get_cert_verify_signature_input(

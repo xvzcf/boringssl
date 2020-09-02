@@ -325,6 +325,8 @@ enum ssl_verify_result_t ssl_verify_peer_cert(SSL_HANDSHAKE *hs) {
     // authentication from the established session and ignore what was newly
     // received.
     hs->new_session->ocsp_response = UpRef(prev_session->ocsp_response);
+    hs->new_session->delegated_credential =
+        UpRef(prev_session->delegated_credential);
     hs->new_session->signed_cert_timestamp_list =
         UpRef(prev_session->signed_cert_timestamp_list);
     hs->new_session->verify_result = prev_session->verify_result;

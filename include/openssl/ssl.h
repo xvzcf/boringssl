@@ -1575,6 +1575,14 @@ OPENSSL_EXPORT void SSL_get0_signed_cert_timestamp_list(const SSL *ssl,
 // WARNING: the returned data is not guaranteed to be well formed.
 OPENSSL_EXPORT void SSL_get0_ocsp_response(const SSL *ssl, const uint8_t **out,
                                            size_t *out_len);
+// SSL_get0_delegated_credential sets |*out| and |*out_len| to point to
+// |*out_len| bytes of the delegated credential sent by the peer. Its format
+// is as specified in https://tools.ietf.org/html/draft-ietf-tls-subcerts-09.
+//
+// WARNING: the returned data is not guaranteed to be well formed.
+OPENSSL_EXPORT void SSL_get0_delegated_credential(const SSL *ssl,
+                                                  const uint8_t **out,
+                                                  size_t *out_len);
 
 // SSL_get_tls_unique writes at most |max_out| bytes of the tls-unique value
 // for |ssl| to |out| and sets |*out_len| to the number of bytes written. It
@@ -3162,21 +3170,34 @@ OPENSSL_EXPORT const char *SSL_get_psk_identity(const SSL *ssl);
 // host may use a delegated credential to sign the handshake. Once issued,
 // credentials can't be revoked. In order to mitigate the damage in case the
 // credential secret key is compromised, the credential is only valid for a
-// short time (days, hours, or even minutes). This library implements draft-03
-// of the protocol spec.
+// short time (days, hours, or even minutes).
 //
-// The extension ID has not been assigned; we're using 0xff02 for the time
-// being. Currently only the server side is implemented.
+// Currently, only part of the draft-09 of the protocol spec is implemented:
+// that is to say, the BoringSSL client can send the "delegated_credential"
+// extension and authenticate the server's delegated credential. The
+// BoringSSL server can parse the delegated_credential extension and can
+// configure a DC for use in the handshake.
+// In particular, the client cannot authenticate itself to the server using
+// delegated credentials.
 //
+//
+
+// SSL_CTX_enable_delegated_credentials enables support for the delegated
+// credentials extension.
+OPENSSL_EXPORT void SSL_CTX_enable_delegated_credentials(SSL_CTX *ctx,
+                                                         int enabled);
+
+// SSL_enable_delegated_credentials enables support for the delegated
+// credentials extension for a particular connection.
+OPENSSL_EXPORT void SSL_enable_delegated_credentials(SSL *ssl, int enabled);
+
 // Servers configure a DC for use in the handshake via
 // |SSL_set1_delegated_credential|. It must be signed by the host's end-entity
-// certificate as defined in draft-ietf-tls-subcerts-03.
+// certificate as specified in draft-ietf-tls-subcerts-09.
 
 // SSL_set1_delegated_credential configures the delegated credential (DC) that
 // will be sent to the peer for the current connection. |dc| is the DC in wire
 // format, and |pkey| or |key_method| is the corresponding private key.
-// Currently (as of draft-03), only servers may configure a DC to use in the
-// handshake.
 //
 // The DC will only be used if the protocol version is correct and the signature
 // scheme is supported by the peer. If not, the DC will not be negotiated and
@@ -5305,6 +5326,7 @@ BSSL_NAMESPACE_END
 #define SSL_R_NO_APPLICATION_PROTOCOL 307
 #define SSL_R_NEGOTIATED_ALPS_WITHOUT_ALPN 308
 #define SSL_R_ALPS_MISMATCH_ON_EARLY_DATA 309
+#define SSL_R_DELEGATED_CREDENTIAL_EXPIRED 310
 #define SSL_R_SSLV3_ALERT_CLOSE_NOTIFY 1000
 #define SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE 1010
 #define SSL_R_SSLV3_ALERT_BAD_RECORD_MAC 1020

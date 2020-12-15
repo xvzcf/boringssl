@@ -58,6 +58,12 @@ static const struct argument kArguments[] = {
         "argument is not provided.",
     },
     {
+        "-subcert", kOptionalArgument,
+        "Hex-encoded file containing the delegated credential to use for "
+        "the handshake. This argument expects that the credential-issuing "
+        "-cert and the corresponding -key will be specified as well."
+    },
+    {
         "-ocsp-response", kOptionalArgument, "OCSP response file to send",
     },
     {
@@ -103,6 +109,89 @@ static bool LoadOCSPResponse(SSL_CTX *ctx, const char *filename) {
   }
 
   return true;
+}
+
+static bool FromHexDigit(uint8_t *out, char c) {
+  if ('0' <= c && c <= '9') {
+    *out = c - '0';
+    return true;
+  }
+  if ('a' <= c && c <= 'f') {
+    *out = c - 'a' + 10;
+    return true;
+  }
+  if ('A' <= c && c <= 'F') {
+    *out = c - 'A' + 10;
+    return true;
+  }
+  return false;
+}
+
+static bool HexDecode(std::string *out, const std::string &in) {
+  if ((in.size() & 1) != 0) {
+    return false;
+  }
+
+  std::unique_ptr<uint8_t[]> buf(new uint8_t[in.size() / 2]);
+  for (size_t i = 0; i < in.size() / 2; i++) {
+    uint8_t high, low;
+    if (!FromHexDigit(&high, in[i * 2]) || !FromHexDigit(&low, in[i * 2 + 1])) {
+      return false;
+    }
+    buf[i] = (high << 4) | low;
+  }
+
+  out->assign(reinterpret_cast<const char *>(buf.get()), in.size() / 2);
+  return true;
+}
+
+static bool LoadDelegatedCredential(SSL *ssl, const char *filename) {
+  ScopedFILE f(fopen(filename, "rb"));
+  std::vector<uint8_t> data;
+  if (f == nullptr || !ReadAll(&data, f.get())) {
+    fprintf(stderr, "Error reading %s.\n", filename);
+    return false;
+  }
+
+
+  if (!data.empty()) {
+    std::string dc_str = std::string(data.begin(), data.end());
+    std::string::size_type comma = dc_str.find(',');
+    if (comma == std::string::npos) {
+      fprintf(stderr,
+              "failed to find comma in delegated credential argument.\n");
+      return false;
+    }
+
+    const std::string dc_hex = dc_str.substr(0, comma);
+    const std::string pkcs8_hex = dc_str.substr(comma + 1);
+    std::string dc, pkcs8;
+    if (!HexDecode(&dc, dc_hex) || !HexDecode(&pkcs8, pkcs8_hex)) {
+      fprintf(stderr, "failed to hex decode delegated credential.\n");
+      return false;
+    }
+
+    CBS dc_cbs(bssl::Span<const uint8_t>(
+        reinterpret_cast<const uint8_t *>(dc.data()), dc.size()));
+    CBS pkcs8_cbs(bssl::Span<const uint8_t>(
+        reinterpret_cast<const uint8_t *>(pkcs8.data()), pkcs8.size()));
+
+    bssl::UniquePtr<EVP_PKEY> priv(EVP_parse_private_key(&pkcs8_cbs));
+    if (!priv) {
+      fprintf(stderr, "failed to parse delegated credential private key.\n");
+      return false;
+    }
+
+    bssl::UniquePtr<CRYPTO_BUFFER> dc_buf(
+        CRYPTO_BUFFER_new_from_CBS(&dc_cbs, nullptr));
+    if (!SSL_set1_delegated_credential(ssl, dc_buf.get(),
+                                      priv.get(), nullptr)) {
+      fprintf(stderr, "SSL_set1_delegated_credential failed.\n");
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 static bssl::UniquePtr<EVP_PKEY> MakeKeyPairForSelfSignedCert() {
@@ -241,6 +330,7 @@ bool Server(const std::vector<std::string> &args) {
       fprintf(stderr, "Failed to load cert chain: %s\n", cert.c_str());
       return false;
     }
+
   } else {
     bssl::UniquePtr<EVP_PKEY> evp_pkey = MakeKeyPairForSelfSignedCert();
     if (!evp_pkey) {
@@ -337,6 +427,14 @@ bool Server(const std::vector<std::string> &args) {
 
     if (args_map.count("-jdk11-workaround") != 0) {
       SSL_set_jdk11_workaround(ssl.get(), 1);
+    }
+
+    if(args_map.count("-key") != 0 &&
+       args_map.count("-cert") != 0 &&
+       args_map.count("-subcert") != 0) {
+      if (!LoadDelegatedCredential(ssl.get(), args_map["-subcert"].c_str())) {
+        return false;
+      }
     }
 
     int ret = SSL_accept(ssl.get());

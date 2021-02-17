@@ -149,6 +149,12 @@ static const struct argument kArguments[] = {
         "Enables delegated credential support.",
     },
     {
+        "-subcert", kOptionalArgument,
+        "Hex-encoded file containing the delegated credential to use for "
+        "the handshake. This argument expects that the credential-issuing "
+        "-cert and the corresponding -key will be specified as well. This argument is equivalent to specifying -subcerts as well as a DC to use."
+    },
+    {
         "-debug", kBooleanArgument,
         "Print debug information about the handshake",
     },
@@ -295,8 +301,33 @@ static bool DoConnection(SSL_CTX *ctx,
     SSL_set_session(ssl.get(), resume_session.get());
   }
 
-  if (args_map.count("-subcerts") != 0) {
+  if (args_map.count("-subcerts") != 0 ||
+      args_map.count("-subcert") != 0) {
     SSL_enable_delegated_credentials(ssl.get(), true);
+  }
+  if(args_map.count("-key") != 0 &&
+     args_map.count("-cert") != 0 &&
+     args_map.count("-subcert") != 0) {
+    std::vector<uint8_t> dc, dc_priv_raw;
+    if (!ReadDelegatedCredential(&dc, &dc_priv_raw, args_map["-subcert"].c_str())) {
+      return false;
+    }
+    CBS dc_cbs(bssl::Span<const uint8_t>(dc.data(), dc.size()));
+    CBS pkcs8_cbs(bssl::Span<const uint8_t>(dc_priv_raw.data(), dc_priv_raw.size()));
+
+    bssl::UniquePtr<EVP_PKEY> dc_priv(EVP_parse_private_key(&pkcs8_cbs));
+    if (!dc_priv) {
+      fprintf(stderr, "failed to parse delegated credential private key.\n");
+      return false;
+    }
+
+    bssl::UniquePtr<CRYPTO_BUFFER> dc_buf(
+        CRYPTO_BUFFER_new_from_CBS(&dc_cbs, nullptr));
+    if (!SSL_set1_delegated_credential(ssl.get(), dc_buf.get(),
+                                       dc_priv.get(), nullptr)) {
+      fprintf(stderr, "SSL_set1_delegated_credential failed.\n");
+      return false;
+    }
   }
 
   SSL_set_bio(ssl.get(), bio.get(), bio.get());

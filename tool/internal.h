@@ -120,6 +120,7 @@ bool GetUnsigned(unsigned *out, const std::string &arg_name,
                  const std::map<std::string, std::string> &args);
 
 bool ReadAll(std::vector<uint8_t> *out, FILE *in);
+bool ReadDelegatedCredential(std::vector<uint8_t> *dc_out, std::vector<uint8_t> *priv_out, const char *filename);
 
 bool Ciphers(const std::vector<std::string> &args);
 bool Client(const std::vector<std::string> &args);

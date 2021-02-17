@@ -1800,6 +1800,7 @@ bssl::UniquePtr<SSL> TestConfig::NewSSL(
 
     bssl::UniquePtr<CRYPTO_BUFFER> dc_buf(
         CRYPTO_BUFFER_new_from_CBS(&dc_cbs, nullptr));
+    SSL_enable_delegated_credentials(ssl.get(), true);
     if (!SSL_set1_delegated_credential(ssl.get(), dc_buf.get(),
                                       priv.get(), nullptr)) {
       fprintf(stderr, "SSL_set1_delegated_credential failed.\n");

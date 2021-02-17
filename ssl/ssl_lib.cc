@@ -2172,7 +2172,7 @@ void SSL_get0_ocsp_response(const SSL *ssl, const uint8_t **out,
 void SSL_get0_delegated_credential(const SSL *ssl, const uint8_t **out,
                                    size_t *out_len) {
   SSL_SESSION *session = SSL_get_session(ssl);
-  if (ssl->server || !session || !session->delegated_credential) {
+  if (!session || !session->delegated_credential) {
     *out_len = 0;
     *out = NULL;
     return;

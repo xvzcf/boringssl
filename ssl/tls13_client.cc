@@ -51,6 +51,29 @@ enum client_hs_state_t {
   state_done,
 };
 
+static bool parse_u16_array(const CBS *cbs, Array<uint16_t> *out) {
+  CBS copy = *cbs;
+  if ((CBS_len(&copy) & 1) != 0) {
+    OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
+    return false;
+  }
+
+  Array<uint16_t> ret;
+  if (!ret.Init(CBS_len(&copy) / 2)) {
+    return false;
+  }
+  for (size_t i = 0; i < ret.size(); i++) {
+    if (!CBS_get_u16(&copy, &ret[i])) {
+      OPENSSL_PUT_ERROR(SSL, ERR_R_INTERNAL_ERROR);
+      return false;
+    }
+  }
+
+  assert(CBS_len(&copy) == 0);
+  *out = std::move(ret);
+  return 1;
+}
+
 static const uint8_t kZeroes[EVP_MAX_MD_SIZE] = {0};
 
 // end_of_early_data closes the early data stream for |hs| and switches the
@@ -564,11 +587,12 @@ static enum ssl_hs_wait_t do_read_certificate_request(SSL_HANDSHAKE *hs) {
   }
 
 
-  bool have_sigalgs = false, have_ca = false;
-  CBS sigalgs, ca;
+  bool have_sigalgs = false, have_ca = false, have_dc = false;
+  CBS sigalgs, ca, dc_sigalgs;
   const SSL_EXTENSION_TYPE ext_types[] = {
     {TLSEXT_TYPE_signature_algorithms, &have_sigalgs, &sigalgs},
     {TLSEXT_TYPE_certificate_authorities, &have_ca, &ca},
+    {TLSEXT_TYPE_delegated_credential, &have_dc, &dc_sigalgs},
   };
 
   CBS body = msg.body, context, extensions, supported_signature_algorithms;
@@ -603,6 +627,29 @@ static enum ssl_hs_wait_t do_read_certificate_request(SSL_HANDSHAKE *hs) {
       ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
       return ssl_hs_error;
     }
+  }
+
+  if (have_dc) {
+    if (!hs->config->delegated_credential_enabled) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_UNEXPECTED_EXTENSION);
+      ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_UNSUPPORTED_EXTENSION);
+      return ssl_hs_error;
+    }
+    if (CBS_len(&dc_sigalgs) == 0) {
+      ssl_send_alert(ssl, SSL3_AL_FATAL, alert);
+      OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
+      return ssl_hs_error;
+    }
+    CBS sigalg_list;
+    if (!CBS_get_u16_length_prefixed(&dc_sigalgs, &sigalg_list) ||
+        CBS_len(&sigalg_list) == 0 ||
+        CBS_len(&dc_sigalgs) != 0 ||
+        !parse_u16_array(&sigalg_list, &hs->peer_delegated_credential_sigalgs)) {
+      ssl_send_alert(ssl, SSL3_AL_FATAL, alert);
+      OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
+      return ssl_hs_error;
+    }
+    hs->delegated_credential_requested = true;
   }
 
   hs->cert_request = true;

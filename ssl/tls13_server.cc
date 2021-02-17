@@ -752,6 +752,19 @@ static enum ssl_hs_wait_t do_send_server_hello(SSL_HANDSHAKE *hs) {
       }
     }
 
+    if (hs->config->delegated_credential_enabled) {
+      CBB contents, dc_sigalgs_cbb;
+      if (!CBB_add_u16(&cert_request_extensions,
+                       TLSEXT_TYPE_delegated_credential) ||
+          !CBB_add_u16_length_prefixed(&cert_request_extensions,
+                                       &contents) ||
+          !CBB_add_u16_length_prefixed(&contents, &dc_sigalgs_cbb) ||
+          !tls12_add_verify_sigalgs(hs, &dc_sigalgs_cbb) ||
+          !CBB_flush(&cert_request_extensions)) {
+        return ssl_hs_error;
+      }
+    }
+
     if (!ssl_add_message_cbb(ssl, cbb.get())) {
       return ssl_hs_error;
     }

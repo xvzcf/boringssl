@@ -272,6 +272,9 @@ type delegatedCredentialConfig struct {
 	// algo is the signature algorithm that the delegated credential itself is
 	// signed with. Cannot be zero.
 	algo signatureAlgorithm
+	// forClient indicates whether the delegated credential is intended to be
+	// used by a client endpoint.
+	forClient bool
 }
 
 func loadRSAPrivateKey(filename string) (priv *rsa.PrivateKey, privPKCS8 []byte, err error) {

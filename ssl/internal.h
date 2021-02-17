@@ -161,7 +161,7 @@
 
 #include "../crypto/err/internal.h"
 #include "../crypto/internal.h"
-
+#include <iostream>
 
 #if defined(OPENSSL_WINDOWS)
 // Windows defines struct timeval in winsock2.h.

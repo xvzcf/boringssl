@@ -305,9 +305,7 @@ bool tls13_process_certificate(SSL_HANDSHAKE *hs, const SSLMessage &msg,
     }
 
     if (have_dc) {
-      // As of draft-ietf-tls-subcerts-03, only the server may authenticate
-      // itself with a delegated credential. TODO(xvzcf): Add client auth support.
-      if (ssl->server || !hs->config->delegated_credential_enabled) {
+      if (!hs->config->delegated_credential_enabled) {
         OPENSSL_PUT_ERROR(SSL, SSL_R_UNEXPECTED_EXTENSION);
         ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_UNSUPPORTED_EXTENSION);
         return 0;

@@ -949,18 +949,12 @@ bool ssl_cert_check_delegation_usage(const CBS *in) {
 }
 
 bool ssl_signing_with_dc(const SSL_HANDSHAKE *hs) {
-  // Server-side authentication of the client is
-  // currently not implemented.
-  return hs->ssl->server &&
-         hs->delegated_credential_requested &&
+  return hs->delegated_credential_requested &&
          ssl_can_serve_dc(hs);
 }
 
 bool ssl_verifying_with_dc(const SSL_HANDSHAKE *hs) {
-  // Server-side authentication of the client is
-  // currently not implemented.
-  if (!hs->ssl->server &&
-      hs->config->delegated_credential_enabled &&
+  if (hs->config->delegated_credential_enabled &&
       hs->new_session->delegated_credential != nullptr) {
     return true;
   }
@@ -1006,7 +1000,8 @@ static int cert_set_dc(CERT *cert, CRYPTO_BUFFER *const raw, EVP_PKEY *privkey,
 // end-entity certificate |leaf|, the DC public key, and the DC parameters.
 static int build_dc_message(CBB *message,
                             const DC *dc,
-                            const CRYPTO_BUFFER *leaf) {
+                            const CRYPTO_BUFFER *leaf,
+                            const bool server_side) {
   // The signature message begins with the octet 32 (0x20) repeated 64 times.
   uint8_t buf[64];
   OPENSSL_memset(buf, 0x20, sizeof(buf));
@@ -1014,14 +1009,18 @@ static int build_dc_message(CBB *message,
     return 0;
   }
 
-  // Server-side authentication of the client is
-  // currently not implemented.
-  static const char kServerContext[] = "TLS, server delegated credentials";
+  static const char *kContextString;
+  if(server_side) {
+      // We're validating a client DC.
+      kContextString = "TLS, client delegated credentials";
+  } else {
+      kContextString = "TLS, server delegated credentials";
+  }
 
   CBB pkey_encoded;
   if (!CBB_add_bytes(message,
-                     (const uint8_t *)kServerContext,
-                     sizeof(kServerContext)) ||
+                     (const uint8_t *)kContextString,
+                     strlen(kContextString) + 1) ||
       !CBB_add_bytes(message,
                      CRYPTO_BUFFER_data(leaf),
                      CRYPTO_BUFFER_len(leaf)) ||
@@ -1104,7 +1103,7 @@ bool ssl_dc_verify(const SSL_HANDSHAKE *hs) {
   // First, build the message whose signature is to be verified.
   CBB message;
   CBB_init(&message, 512);
-  if (!build_dc_message(&message, dc, raw_leaf_buf)) {
+  if (!build_dc_message(&message, dc, raw_leaf_buf, hs->ssl->server)) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_INTERNAL_ERROR);
     return false;
   }
@@ -1261,6 +1260,9 @@ int SSL_set1_delegated_credential(SSL *ssl, CRYPTO_BUFFER *dc, EVP_PKEY *pkey,
                                   const SSL_PRIVATE_KEY_METHOD *key_method) {
   if (!ssl->config) {
     return 0;
+  }
+  if (!ssl->config->delegated_credential_enabled) {
+      return 0;
   }
 
   return cert_set_dc(ssl->config->cert.get(), dc, pkey, key_method);

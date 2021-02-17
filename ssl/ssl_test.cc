@@ -6692,272 +6692,191 @@ TEST(SSLTest, BIO) {
 }  // namespace
 
 // Delegated credentials.
+static uint32_t kDCMaxTTL = 60 * 60 * 24 * 7;
+
+static uint64_t kClientDelegationCertNotBefore = 1613752394;
+
 // GetTestDelegationCertificate returns the certificate that produced the test
 // DCs below. It is a self-signed certificate and has the  DelegationUsage
-// extension as defined in draft-ietf-tls-subcerts-02.
-static bssl::UniquePtr<X509> GetTestDelegationCertificate() {
+// extension as defined in draft-ietf-tls-subcerts-10.
+static bssl::UniquePtr<X509> GetTestClientDelegationCertificate() {
   static const char kCertPEM[] =
       "-----BEGIN CERTIFICATE-----\n"
-      "MIIBezCCASKgAwIBAgIRAJZxpkATSkXtaYuKkmP/7YQwCgYIKoZIzj0EAwIwFDES\n"
-      "MBAGA1UEChMJQWNtZSBJbmMuMB4XDTIwMDcwMTEzMDUzM1oXDTIwMDcwODEzMDUz\n"
-      "M1owFDESMBAGA1UEChMJQWNtZSBJbmMuMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcD\n"
-      "QgAEJYa2xzCGsR//gL6mdUxMr+DpSrrsputAPiTSrnBOvyfCw1aY3fq+tlRS9WbV\n"
-      "1zXEQKItVNf7ofFSm2BYVXxOxqNVMFMwDgYDVR0PAQH/BAQDAgeAMBMGA1UdJQQM\n"
-      "MAoGCCsGAQUFBwMBMAwGA1UdEwEB/wQCMAAwDwYDVR0RBAgwBocEfwAAATANBgkr\n"
-      "BgEEAYLaSywEADAKBggqhkjOPQQDAgNHADBEAiAWufQRTjgJaOYn3KBmvkNUwLyp\n"
-      "66vHmWi7L52EDCUGYwIgawvUo3EplSqfdTrYM1YbjuN7aiyqeljkE5G0hihUh0w=\n"
+      "MIICMzCCAdqgAwIBAgIQUmQDAKujqKs0EBcNvkuXfzAKBggqhkjOPQQDAjBmMSow\n"
+      "KAYDVQQKEyF0bHMtaW50ZXJvcC1ydW5uZXIgZGV2ZWxvcG1lbnQgQ0ExGzAZBgNV\n"
+      "BAsTEnRscy1pbnRlcm9wLXJ1bm5lcjEbMBkGA1UEAxMSdGxzLWludGVyb3AtcnVu\n"
+      "bmVyMB4XDTIxMDIxOTE2MzMxNFoXDTIyMDMwNjIxMzMxNFowYTEzMDEGA1UEChMq\n"
+      "dGxzLWludGVyb3AtcnVubmVyIGRldmVsb3BtZW50IGNlcnRpZmljYXRlMSowKAYD\n"
+      "VQQLEyFnZW5lcmF0ZWQvdGVzdC1pbnB1dHMvZXhhbXBsZS5jcnQwWTATBgcqhkjO\n"
+      "PQIBBggqhkjOPQMBBwNCAARUBk9yEGcKg3Z0uInlIZvQJbB+a+ScqEm8ke3OV2VE\n"
+      "ZDstd5xpzcGE2C5BYV8HKH9mLdTI+6vyTxN1igIl59D+o28wbTAOBgNVHQ8BAf8E\n"
+      "BAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwIwHwYDVR0jBBgwFoAUCWCAwhmmCb+7\n"
+      "1qfePouY2QZQ678wFgYDVR0RBA8wDYILZXhhbXBsZS5jb20wDQYJKwYBBAGC2kss\n"
+      "BAAwCgYIKoZIzj0EAwIDRwAwRAIgJTZVeATVgAo4spIkGhY8m1k5vnl/OM69fswf\n"
+      "T65gkJACIH04TWnGubmfD+9No+V/VsvbKBVgj94taBnnyxO7ZD2p\n"
       "-----END CERTIFICATE-----\n";
   bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(kCertPEM, strlen(kCertPEM)));
   return bssl::UniquePtr<X509>(
       PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
 }
 
-// GetTestDelegationKey returns the private key corresponding to the test
-// delegation certificate.
-static bssl::UniquePtr<EVP_PKEY> GetTestDelegationKey() {
+static bssl::UniquePtr<EVP_PKEY> GetTestClientDelegationKey() {
   static const char kKeyPEM[] =
       "-----BEGIN EC PRIVATE KEY-----\n"
-      "MHcCAQEEIP7E4tjaGNYrrwQq52g/P409lF0HFabPoAd2gHzDUdWCoAoGCCqGSM49\n"
-      "AwEHoUQDQgAEJYa2xzCGsR//gL6mdUxMr+DpSrrsputAPiTSrnBOvyfCw1aY3fq+\n"
-      "tlRS9WbV1zXEQKItVNf7ofFSm2BYVXxOxg==\n"
+      "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgjyou+xZeyaBlPpWZ\n"
+      "Abk1/o8xjEscxioX22/Y3kaLhLChRANCAARUBk9yEGcKg3Z0uInlIZvQJbB+a+Sc\n"
+      "qEm8ke3OV2VEZDstd5xpzcGE2C5BYV8HKH9mLdTI+6vyTxN1igIl59D+\n"
       "-----END EC PRIVATE KEY-----\n";
   bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(kKeyPEM, strlen(kKeyPEM)));
   return bssl::UniquePtr<EVP_PKEY>(
       PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
 }
 
-// The notBefore field (in Unix time) of the certificate output by
-// |GetTestDelegationCertificate|. This is used as the current time for the
-// purpose of testing the handshake with the delegated credentials extension.
-static uint64_t kDelegationCertNotBefore = 1593608733;
+// Base64-encoded DCs for testing. The raw DCs are in the wire format defined in
+// the specification.
+static const char *kClientDCs[] = {
+    // p256
+    "AAKjAAQDAABbMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXya4UfE8v+xNO6+v"
+    "6K3PVE3E9bYKGHYI0jF4nK/4ag8WQ/zgZX/nlEOlxlK34XAZ3oAkMna7OQQZPykh"
+    "b6e7MgQDAEcwRQIgZmaPAZV+oN8u8xsliqakAR4d2SjagDKo6D9gehuF4ikCIQDE"
+    "fM4+ag8GyTuS/v97pZQo2BKlkrPbqHCmFsn2xJ5wJw=="
+};
 
-// DCTestTimeCallback sets the caller's current time for the purposes of running
-// the DC tests. All test DCs should be valid at this time.
-static void DCTestTimeCallback(const SSL *ssl, timeval *out_clock) {
-  out_clock->tv_sec = kDelegationCertNotBefore;
-  out_clock->tv_usec = 0;
+// PEM-encoded private keys corresponding to the test DCs.
+static const char *kClientDCKeys [] {
+    // p256
+    "-----BEGIN EC PRIVATE KEY-----\n"
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg6Y5rtD7EunzgbzN/\n"
+    "9uElbLZ0xvw2hkwNbCSVFjWNtu+hRANCAARfJrhR8Ty/7E07r6/orc9UTcT1tgoY\n"
+    "dgjSMXicr/hqDxZD/OBlf+eUQ6XGUrfhcBnegCQydrs5BBk/KSFvp7sy\n"
+    "-----END EC PRIVATE KEY-----\n",
+};
+
+static uint64_t kServerDelegationCertNotBefore = 1613768219;
+static bssl::UniquePtr<X509> GetTestServerDelegationCertificate() {
+  static const char kCertPEM[] =
+      "-----BEGIN CERTIFICATE-----\n"
+      "MIICHzCCAcWgAwIBAgIQW0gmCWGikd1BhI3G7kh4fzAKBggqhkjOPQQDAjBmMSow\n"
+      "KAYDVQQKEyF0bHMtaW50ZXJvcC1ydW5uZXIgZGV2ZWxvcG1lbnQgQ0ExGzAZBgNV\n"
+      "BAsTEnRscy1pbnRlcm9wLXJ1bm5lcjEbMBkGA1UEAxMSdGxzLWludGVyb3AtcnVu\n"
+      "bmVyMB4XDTIxMDIxOTIwNTY1OVoXDTIyMDMwNzAxNTY1OVowYTEzMDEGA1UEChMq\n"
+      "dGxzLWludGVyb3AtcnVubmVyIGRldmVsb3BtZW50IGNlcnRpZmljYXRlMSowKAYD\n"
+      "VQQLEyFnZW5lcmF0ZWQvdGVzdC1pbnB1dHMvZXhhbXBsZS5jcnQwWTATBgcqhkjO\n"
+      "PQIBBggqhkjOPQMBBwNCAAQzAfKPxZ+gXGMx4KN8RUltFDmo4bKdCA9f9BJ+2gwV\n"
+      "IWs3O1Ce/d2lm+Id+DAlzCaL0Nua9hx8TrfekuwvPi2Eo1owWDAOBgNVHQ8BAf8E\n"
+      "BAMCBaAwHwYDVR0jBBgwFoAU+TPJZx3zcER4XPe/hMYCMvDL5hcwFgYDVR0RBA8w\n"
+      "DYILZXhhbXBsZS5jb20wDQYJKwYBBAGC2kssBAAwCgYIKoZIzj0EAwIDSAAwRQIh\n"
+      "AOYSUBxoiC1mSQPAKmUnwIC/lNv3jQIfeFWthAg3mPSiAiAy6c+VB0Rnx052FPLp\n"
+      "LX6Z50evsiWgFiEVls/wGcNXjw==\n"
+      "-----END CERTIFICATE-----\n";
+  bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(kCertPEM, strlen(kCertPEM)));
+  return bssl::UniquePtr<X509>(
+      PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
 }
 
-// DCTestBadTimeCallback sets the caller's current time to the exact moment the
-// test DCs expire. All test DCs should be invalid at this time.
-static void DCTestBadTimeCallback(const SSL *ssl, timeval *out_clock) {
-  // The longest period for which a DC may be valid.
-  static uint32_t kDCMaxTTL = 60 * 60 * 24 * 7;
-  out_clock->tv_sec = kDelegationCertNotBefore + (uint64_t)kDCMaxTTL;
-  out_clock->tv_usec = 0;
+static bssl::UniquePtr<EVP_PKEY> GetTestServerDelegationKey() {
+  static const char kKeyPEM[] =
+      "-----BEGIN EC PRIVATE KEY-----\n"
+      "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg5MhFHUDSXMS/RC6V\n"
+      "BBluoYBfDbvYEyUUTUl4KBTsh3ehRANCAAQzAfKPxZ+gXGMx4KN8RUltFDmo4bKd\n"
+      "CA9f9BJ+2gwVIWs3O1Ce/d2lm+Id+DAlzCaL0Nua9hx8TrfekuwvPi2E\n"
+      "-----END EC PRIVATE KEY-----\n";
+  bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(kKeyPEM, strlen(kKeyPEM)));
+  return bssl::UniquePtr<EVP_PKEY>(
+      PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
 }
 
 // Base64-encoded DCs for testing. The raw DCs are in the wire format defined in
 // the specification.
-static const char *kDCs[] = {
+static const char *kServerDCs[] = {
     // p256
-    "AAk6gAQDAABbMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3d+Pzf7NWkggc7nA"
-    "aaGilBsaMIRkBPQmFsefWn9rBNyeDW2BMFZ6mV080ymb7FM5+Da1cdjJRPifS2Ag"
-    "ZKesmgQDAEgwRgIhAMIU+EDJFpqdTq/1dGPjk8xJd+ODjTnjlcyR1A271HczAiEA"
-    "pYW11X2/nCu4VE/saC/ufvIMw1ICVlCVfhwxait68sw=",
-    // p521
-    "AAk6gAYDAACeMIGbMBAGByqGSM49AgEGBSuBBAAjA4GGAAQBW1wDJ64H4/8yhITm"
-    "GHcYw/61R29wGY0I9ZoeQbQJWqp4dLaPW1cxO92gauXquWIw13UG1nRpoE5dVW5g"
-    "orbYFh4BqrL9opUBBBtY17ZS6weOGkNSmNw5r3Y1T4xA0QhflipvYOehF3BE1uZD"
-    "i7246NDFCci8i1mXNpTu0VD+L5N/UwkEAwBGMEQCIGb3a+0emini37x8s+Kk5z/H"
-    "ZtMPrKZITvLuqOwr7eEQAiBioJSh1+ZQMFcKolH+lKkjmB1OuEJ94K38FIRsPgA8"
-    "ZQ==",
-    // p384
-    "AAk6gAUDAAB4MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEIU3nnaepGRVE0B03mZpC"
-    "p6pKFemLkpvTcJY2DRS/DWTy3MSvhLV2G6wthE6aWnWbOkjv+bvgv6jS2NOtYTFb"
-    "xGcTJEyoyYRNxl2fRUWFsQW4z4LCCWseK7IO3R6LKmnmBAMARjBEAiAHQkPswEN6"
-    "0b1Aun8t6ivnGJFOx6lOCknbeO7y2DErbQIgaq1GUrcGF79hIG/XO4MTjinTp0ai"
-    "PzmH7d0v9UHNP4c=",
-    // ed25519
-    "AAk6gAgHAAAsMCowBQYDK2VwAyEAfNmwkbUcG0OgeI8mjmvEob+mEhMmdoRvn7yA"
-    "o1vOui4EAwBGMEQCIByJ7WXoTUXaIK2P99WyE0ZGHz2fCIaxsQ1LUyZlqqMjAiBg"
-    "KOC3Yi3ThHvk5Kbk0NYz8GPokcsCIzRUCJ43O2meFQ==",
+    "AAKjAAQDAABbMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmuthUd72TIXjokv6a+"
+    "c0J+f9fQDWaZj+vyUDMIVqHirtTt43vPx8WUiwetf1sXP24L3r4R2aUghyi+RXXZ8m"
+    "pAQDAEYwRAIgLemAGklDSd9DJRGEapnTOyycohmdk5BG7j9za1EO+xsCIDBe6C+uRD"
+    "6r6gam+zxp2BADiwOHl8jVKM1wjwetVSfp"
 };
 
 // PEM-encoded private keys corresponding to the test DCs.
-static const char *kDCKeys [] {
+static const char *kServerDCKeys [] {
     // p256
     "-----BEGIN EC PRIVATE KEY-----\n"
-    "MHcCAQEEIOXFPRlfeZyHWksUz/WpNQ2ADK+grA9AqoPcnk6Ti7cyoAoGCCqGSM49\n"
-    "AwEHoUQDQgAE3d+Pzf7NWkggc7nAaaGilBsaMIRkBPQmFsefWn9rBNyeDW2BMFZ6\n"
-    "mV080ymb7FM5+Da1cdjJRPifS2AgZKesmg==\n"
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgINuBN7lxY0f3/4hAeO\n"
+    "fR9NIul6pLzNytFaaA6x7vWHShRANCAASa62FR3vZMheOiS/pr5zQn5/19ANZpmP6/\n"
+    "JQMwhWoeKu1O3je8/HxZSLB61/Wxc/bgvevhHZpSCHKL5Fddnyak\n"
     "-----END EC PRIVATE KEY-----\n",
-    // p521
-    "-----BEGIN EC PRIVATE KEY-----\n"
-    "MIHcAgEBBEIB1wzFuM7Q49mKFRVwROhZxJa08QJgkr/lPTBtr3Vu//r2BbCcL2e9\n"
-    "3Tm3ImfyzVcxRAeFG3EsZwEPGPGFdMoxNUagBwYFK4EEACOhgYkDgYYABAFbXAMn\n"
-    "rgfj/zKEhOYYdxjD/rVHb3AZjQj1mh5BtAlaqnh0to9bVzE73aBq5eq5YjDXdQbW\n"
-    "dGmgTl1VbmCittgWHgGqsv2ilQEEG1jXtlLrB44aQ1KY3DmvdjVPjEDRCF+WKm9g\n"
-    "56EXcETW5kOLvbjo0MUJyLyLWZc2lO7RUP4vk39TCQ==\n"
-    "-----END EC PRIVATE KEY-----\n",
-    // p384
-    "-----BEGIN EC PRIVATE KEY-----\n"
-    "MIGkAgEBBDA3FsT2o+F530QPzoOyHEptRzBKWG//f9LQ8rVxsVtVVPe0PICBDdgg\n"
-    "EbncOYo8Dx2gBwYFK4EEACKhZANiAAQhTeedp6kZFUTQHTeZmkKnqkoV6YuSm9Nw\n"
-    "ljYNFL8NZPLcxK+EtXYbrC2ETppadZs6SO/5u+C/qNLY061hMVvEZxMkTKjJhE3G\n"
-    "XZ9FRYWxBbjPgsIJax4rsg7dHosqaeY=\n"
-    "-----END EC PRIVATE KEY-----\n",
-    // ed25519
-    "-----BEGIN PRIVATE KEY-----\n"
-    "MC4CAQAwBQYDK2VwBCIEIMhN5dZ72hErCLe8j9ogbfoH3Zo9pn7T1qtSmEKPQUEP\n"
-    "-----END PRIVATE KEY-----\n",
 };
 
 // DCTest stores the parameters of a test handshake involving a DC.
-struct DCTest {
-  const char *name;
-  bool do_client_dc; // Whether the client will indicate support
-  bool do_server_dc; // Whether the server will send a DC
+
+struct DCTestEndpointConfiguration {
+  bool support_dc; // Whether to support and indicate DC
+  bool send_dc; // Whether to configure and send a DC
+  bool request_peer_cert;
   bool do_fallback; // Whether the server will configure a cert private key
-  bool bad_dc; // Use an invalid DC
+  bool bad_dc; // Use a corrupted DC
   bool expired_dc; // Use an expired DC
-  bool expect_success;
-  bool expect_dc;
-  uint16_t client_version; // Max. protocol version that the client supports
+  uint16_t max_version; // Max. protocol version supported
   const char *b64_dc; // The base64-encoded DC
   const char *pem_key; // The PEM-encoded DC private key
 };
 
-// Test cases.
-static DCTest kDCTests[] = {
-  {
-    "p256",
-    true /* do_client_dc */,    true /* do_server_dc */,
-    false /* do_fallback */,    false /* bad_dc */,
-    false /* expired_dc */,
-    true /* expect_success */,  true /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[0], kDCKeys[0],
-  },
-  {
-    "p521",
-    true /* do_client_dc */,    true /* do_server_dc */,
-    false /* do_fallback */,    false /* bad_dc */,
-    false /* expired_dc */,
-    true /* expect_success */,  true /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[1], kDCKeys[1],
-  },
-  {
-    "ed25519",
-    true /* do_client_dc */,    true /* do_server_dc */,
-    false /* do_fallback */,    false /* bad_dc */,
-    false /* expired_dc */,
-    true /* expect_success */,  true /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[3], kDCKeys[3],
-  },
-  {
-    "unsupported_sigalg",
-    true /* do_client_dc */,    true /* do_server_dc */,
-    true /* do_fallback */,     false /* bad_dc */,
-    false /* expired_dc */,
-    true /* expect_success */,  false /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[2], kDCKeys[2],
-  },
-  {
-    "unsupported_version",
-    true /* do_client_dc */,    true /* do_server_dc */,
-    true /* do_fallback */,     false /* bad_dc */,
-    false /* expired_dc */,
-    true /* expect_success */,  false /* expect_dc */,
-    TLS1_2_VERSION /* client version */,
-    kDCs[0], kDCKeys[0],
-  },
-  {
-    "bad_dc",
-    true /* do_client_dc */,    true /* do_server_dc */,
-    true /* do_fallback */,     true /* bad_dc */,
-    false /* expired_dc */,
-    false /* expect_success */, true /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[0], kDCKeys[0],
-  },
-  {
-    "expired_dc",
-    true /* do_client_dc */,    true /* do_server_dc */,
-    true /* do_fallback */,     false /* bad_dc */,
-    true /* expired_dc */,
-    false /* expect_success */, true /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[0], kDCKeys[0],
-  },
-  {
-    "no_client_indication",
-    false /* do_client_dc */,   true /* do_server_dc */,
-    true  /* do_fallback */,    false /* bad_dc */,
-    false /* expired_dc */,
-    true /* expect_success */, false /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[0], kDCKeys[0],
-  },
-  {
-    "no_server_support",
-    true /* do_client_dc */,    false /* do_server_dc */,
-    true /* do_fallback */,     false /* bad_dc */,
-    false /* expired_dc */,
-    true /* expect_success */,  false /* expect_dc */,
-    TLS1_3_VERSION /* client version */,
-    kDCs[0], kDCKeys[0],
-  },
-};
-
-// test_dc_cert_cb configures the certificate and delegated credential used in a
-// connection attempt. It is called by |SSL_set_cert_cb|. The data pointed to by
-// |arg| is expected to be a |DCTest|.
-//
-// NOTE: What's the right callback for configuring DCs? To pick a DC, we need to
-// know which version was negotiated and which signature schemes the client
-// supports. We could use the |SSL_set_select_cert_cb| and parse |peer_sigalgs|
-// from the ClientHello. The problem here is that, when this callback is called,
-// the protocol version hasn't been determined. The appropriate function to use
-// is |SSL_set_cert_cb|, since this sets a callback that is called after the
-// protocol version is picked. This callback can also use
-// |SSL_get0_peer_verify_algorithms| to determine which signature algorithms are
-// supported by the client.
 static int DCTestSetCertCallback(SSL *ssl, void *arg) {
-  DCTest &t = *reinterpret_cast<DCTest *>(arg);
+  DCTestEndpointConfiguration &t =
+    *reinterpret_cast<DCTestEndpointConfiguration *>(arg);
+
   // Set the certificate.
-  bssl::UniquePtr<X509> cert = GetTestDelegationCertificate();
+  bssl::UniquePtr<X509> cert;
+  if (ssl->server) {
+    cert = GetTestServerDelegationCertificate();
+  } else {
+    cert = GetTestClientDelegationCertificate();
+  }
   if (!cert || !SSL_use_certificate(ssl, cert.get())) {
     return 0;
   }
 
   // Use the delegation private key as the certificate private key. This is our
   // fallback in case a DC doesn't get negotiated.
-  if (t.do_fallback) {
-    bssl::UniquePtr<EVP_PKEY> key = GetTestDelegationKey();
+  if (t.do_fallback ||
+      (ssl->server &&
+       t.request_peer_cert)) {
+    bssl::UniquePtr<EVP_PKEY> key;
+    if (ssl->server) {
+      key = GetTestServerDelegationKey();
+    } else {
+      key = GetTestClientDelegationKey();
+    }
     if (!key || !SSL_use_PrivateKey(ssl, key.get())) {
       return 0;
     }
   }
 
-  // Load the raw DC.
-  std::vector<uint8_t> raw_dc;
-  if (!DecodeBase64(&raw_dc, t.b64_dc)) {
-    return 0;
-  }
+  if (t.send_dc) {
+    // Load the raw DC.
+    std::vector<uint8_t> raw_dc;
+    if (!DecodeBase64(&raw_dc, t.b64_dc)) {
+      return 0;
+    }
 
-  if (t.bad_dc) {
-    // The test involves an invalid DC, so invert one of the bytes.
-    raw_dc[0] ^= 0xff;
-  }
+    if (t.bad_dc) {
+      // The test involves an invalid DC, so invert one of the bytes.
+      raw_dc[0] ^= 0xff;
+    }
 
-  bssl::UniquePtr<CRYPTO_BUFFER> dc(
-      CRYPTO_BUFFER_new(raw_dc.data(), raw_dc.size(), nullptr));
-  // Load the DC private key.
-  bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(t.pem_key, strlen(t.pem_key)));
-  bssl::UniquePtr<EVP_PKEY> sk(
-      PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
-  if (!sk) {
-    return 0;
-  }
+    bssl::UniquePtr<CRYPTO_BUFFER> dc(
+        CRYPTO_BUFFER_new(raw_dc.data(), raw_dc.size(), nullptr));
+    // Load the DC private key.
+    bssl::UniquePtr<BIO> bio(BIO_new_mem_buf(t.pem_key, strlen(t.pem_key)));
+    bssl::UniquePtr<EVP_PKEY> sk(
+        PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr));
+    if (!sk) {
+      return 0;
+    }
 
-  // Configure the SSL to use a DC if requested by the client.
-  if (t.do_server_dc &&
-      !SSL_set1_delegated_credential(ssl, dc.get(), sk.get(), nullptr)) {
-    return (int)t.do_fallback; // Fail open if there's a fallback.
+    // Configure the SSL to use a DC
+    if (!SSL_set1_delegated_credential(ssl, dc.get(), sk.get(), nullptr)) {
+      return (int)t.do_fallback; // Fail open if there's a fallback.
+    }
   }
 
   // NOTE: At this point the SSL state is configured to use the DC private key
@@ -6968,6 +6887,127 @@ static int DCTestSetCertCallback(SSL *ssl, void *arg) {
 }
 
 // Try the handshake with delegated credentials under various conditions.
+// Test cases.
+struct DCTest {
+  const char *name;
+  DCTestEndpointConfiguration client_config;
+  DCTestEndpointConfiguration server_config;
+  bool expect_success;
+  bool expect_dc;
+};
+
+static DCTest DCTests[] = {
+  {
+    "p256_to_client",
+    { /* client_config */
+      true /* support_dc */,    false /* send_dc */,
+      true /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      nullptr, nullptr,
+    },
+    { /* server_config */
+      true /* support_dc */,    true /* send_dc */,
+      false /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      kServerDCs[0], kServerDCKeys[0],
+    },
+    true /* expect_success */,
+    true /* expect_dc */,
+  },
+
+  {
+    "p256_to_server",
+    { /* client_config */
+      true /* support_dc */,    true /* send_dc */,
+      true /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      kClientDCs[0], kClientDCKeys[0],
+    },
+    { /* server_config */
+      true /* support_dc */,    false /* send_dc */,
+      true /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      nullptr, nullptr,
+    },
+    true /* expect_success */,
+    true /* expect_dc */,
+  },
+
+  {
+    "expired_dc_to_client",
+    { /* client_config */
+      true /* support_dc */,    false /* send_dc */,
+      true /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      true /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      nullptr, nullptr,
+    },
+    { /* server_config */
+      true /* support_dc */,    true /* send_dc */,
+      false /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      kServerDCs[0], kServerDCKeys[0],
+    },
+    false /* expect_success */,
+    true /* expect_dc */,
+  },
+
+  {
+    "expired_dc_to_server",
+    { /* client_config */
+      true /* support_dc */,    true /* send_dc */,
+      true /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      kClientDCs[0], kClientDCKeys[0],
+    },
+    { /* server_config */
+      true /* support_dc */,    false /* send_dc */,
+      true /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      true /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      nullptr, nullptr,
+    },
+    false /* expect_success */,
+    true /* expect_dc */,
+  },
+
+  {
+    "bad_dc_to_client",
+    { /* client_config */
+      true /* support_dc */,    false /* send_dc */,
+      true /* request_peer_cert */,
+      false /* do_fallback */,    false /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      nullptr, nullptr,
+    },
+    { /* server_config */
+      true /* support_dc */,    true /* send_dc */,
+      false /* request_peer_cert */,
+      false /* do_fallback */,    true /* bad_dc */,
+      false /* expired_dc */,
+      TLS1_3_VERSION /* max_version */,
+      kServerDCs[0], kServerDCKeys[0],
+    },
+    false /* expect_success */,
+    true /* expect_dc */,
+  },
+};
+
 TEST(SSLTest, DelegatedCredential) {
   bssl::UniquePtr<SSL_CTX> client_ctx(SSL_CTX_new(TLS_method()));
   bssl::UniquePtr<SSL_CTX> server_ctx(SSL_CTX_new(TLS_method()));
@@ -6990,15 +7030,44 @@ TEST(SSLTest, DelegatedCredential) {
   ASSERT_TRUE(SSL_CTX_set_max_proto_version(client_ctx.get(), TLS1_3_VERSION));
   ASSERT_TRUE(SSL_CTX_set_max_proto_version(server_ctx.get(), TLS1_3_VERSION));
 
+  SSL_CTX_set_cert_verify_callback(server_ctx.get(), VerifySucceed, nullptr);
+
   uint8_t *dc;
   size_t dc_len;
   bssl::UniquePtr<SSL> client, server;
-  for (DCTest &t : kDCTests) {
+  for (DCTest &t : DCTests) {
     // If the test involves an expired DC, then set the clock ahead.
-    if (t.expired_dc) {
-      SSL_CTX_set_current_time_cb(client_ctx.get(), DCTestBadTimeCallback);
+    if (t.client_config.expired_dc) {
+      SSL_CTX_set_current_time_cb(client_ctx.get(),
+          [](const SSL *ssl, timeval *out_clock) -> void {
+            out_clock->tv_sec = kClientDelegationCertNotBefore +
+                                (uint64_t)kDCMaxTTL;
+            out_clock->tv_usec = 0;
+
+          });
     } else {
-      SSL_CTX_set_current_time_cb(client_ctx.get(), DCTestTimeCallback);
+      SSL_CTX_set_current_time_cb(client_ctx.get(),
+          [](const SSL *ssl, timeval *out_clock) -> void {
+            out_clock->tv_sec = kClientDelegationCertNotBefore;
+            out_clock->tv_usec = 0;
+
+          });
+    }
+
+    if (t.server_config.expired_dc) {
+      SSL_CTX_set_current_time_cb(server_ctx.get(),
+          [](const SSL *ssl, timeval *out_clock) -> void {
+            out_clock->tv_sec = kServerDelegationCertNotBefore +
+                                (uint64_t)kDCMaxTTL;
+            out_clock->tv_usec = 0;
+
+          });
+    } else {
+      SSL_CTX_set_current_time_cb(server_ctx.get(),
+          [](const SSL *ssl, timeval *out_clock) -> void {
+            out_clock->tv_sec = kServerDelegationCertNotBefore;
+            out_clock->tv_usec = 0;
+          });
     }
 
     // Set up the client and server state.
@@ -7006,20 +7075,40 @@ TEST(SSLTest, DelegatedCredential) {
                                        server_ctx.get(), ClientConfig(),
                                        false /* don't handshake yet */));
 
-    // Set the maximum version supported by the client for this handshake.
-    ASSERT_TRUE(SSL_set_max_proto_version(client.get(), t.client_version));
+    // Set the maximum version supported by the client and server
+    // for this handshake.
+    ASSERT_TRUE(SSL_set_max_proto_version(client.get(),
+                                          t.client_config.max_version));
+    ASSERT_TRUE(SSL_set_max_proto_version(server.get(),
+                                          t.server_config.max_version));
 
     // Enable/disable DCs for this handshake.
-    SSL_enable_delegated_credentials(client.get(), (int)t.do_client_dc);
-    SSL_set_cert_cb(server.get(), DCTestSetCertCallback, &t);
+    SSL_enable_delegated_credentials(client.get(),
+                                     (int)t.client_config.support_dc);
+    SSL_enable_delegated_credentials(server.get(),
+                                     (int)t.server_config.support_dc);
+
+    // Configure certificates for the client and server
+    SSL_set_cert_cb(server.get(), DCTestSetCertCallback, &t.server_config);
+    if (t.server_config.request_peer_cert) {
+      SSL_set_cert_cb(client.get(), DCTestSetCertCallback, &t.client_config);
+      SSL_set_verify(server.get(),
+                     SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                     nullptr);
+    }
 
     // Execute the handshake and test for success.
     EXPECT_EQ(t.expect_success, CompleteHandshakes(client.get(), server.get()))
       << "Test case: " << t.name;
 
-    // Test whether a delegated credential was used.
-    SSL_get0_delegated_credential(client.get(), (const uint8_t **)&dc, &dc_len);
-    EXPECT_EQ(t.expect_dc, dc != NULL) << "Test case: " << t.name;
+    // Test whether a delegated credential was indeed received.
+    if (t.client_config.send_dc) {
+      SSL_get0_delegated_credential(server.get(), (const uint8_t **)&dc, &dc_len);
+      EXPECT_EQ(t.expect_dc, dc != NULL) << "Test case: " << t.name;
+    } else if (t.server_config.send_dc) {
+      SSL_get0_delegated_credential(client.get(), (const uint8_t **)&dc, &dc_len);
+      EXPECT_EQ(t.expect_dc, dc != NULL) << "Test case: " << t.name;
+    }
   }
 }
 BSSL_NAMESPACE_END

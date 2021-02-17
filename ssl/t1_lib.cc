@@ -2998,7 +2998,9 @@ static bool ext_delegated_credential_add_clienthello(SSL_HANDSHAKE *hs,
 static bool ext_delegated_credential_parse_clienthello(SSL_HANDSHAKE *hs,
                                                        uint8_t *out_alert,
                                                        CBS *contents) {
-  if (contents == nullptr || ssl_protocol_version(hs->ssl) < TLS1_3_VERSION) {
+  if (contents == nullptr ||
+      ssl_protocol_version(hs->ssl) < TLS1_3_VERSION ||
+      !hs->config->delegated_credential_enabled) {
     // Don't use delegated credentials unless we're negotiating TLS 1.3 or
     // higher.
     return true;

@@ -1,4 +1,5 @@
 include_directories(../include)
+include_directories(${LIBOQS_DIR}/include)
 
 add_library(
   ssl
@@ -43,7 +44,7 @@ add_library(
 
 add_dependencies(ssl global_target)
 
-target_link_libraries(ssl crypto)
+target_link_libraries(ssl crypto ${LIBOQS})
 
 add_executable(
   ssl_test

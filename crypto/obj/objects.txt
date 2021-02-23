@@ -1335,6 +1335,9 @@ secg-scheme 14 3 : dhSinglePass-cofactorDH-sha512kdf-scheme
 # NID for CECPQ2 (no corresponding OID).
  : CECPQ2
 
+# NID for Kyber512 (no corresponding OID).
+ : Kyber512
+
 # See RFC 8410.
 1 3 101 110 : X25519
 1 3 101 111 : X448

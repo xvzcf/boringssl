@@ -32,6 +32,8 @@
 #include "internal.h"
 #include "../crypto/internal.h"
 
+#include <oqs/oqs.h>
+
 BSSL_NAMESPACE_BEGIN
 
 namespace {
@@ -299,6 +301,89 @@ class CECPQ2KeyShare : public SSLKeyShare {
   HRSS_private_key hrss_private_key_;
 };
 
+class Kyber512KeyShare : public SSLKeyShare {
+ public:
+  Kyber512KeyShare() {}
+
+  uint16_t GroupID() const override { return SSL_CURVE_KYBER512; }
+
+  bool Offer(CBB *out) override {
+    uint8_t public_key[OQS_KEM_kyber_512_length_public_key];
+    int ret = OQS_KEM_kyber_512_keypair(public_key, kyber512_private_key_);
+    if (ret != OQS_SUCCESS) {
+      return false;
+    }
+
+    if (!CBB_add_bytes(out, public_key, sizeof(public_key))) {
+      return false;
+    }
+
+    return true;
+  }
+
+  bool Accept(CBB *out_public_key, Array<uint8_t> *out_secret,
+              uint8_t *out_alert, Span<const uint8_t> peer_key) override {
+    Array<uint8_t> secret;
+    if (!secret.Init(OQS_KEM_kyber_512_length_shared_secret)) {
+      OPENSSL_PUT_ERROR(SSL, ERR_R_MALLOC_FAILURE);
+      return false;
+    }
+
+    if (peer_key.size() != OQS_KEM_kyber_512_length_public_key) {
+      *out_alert = SSL_AD_DECODE_ERROR;
+      OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_ECPOINT);
+      return false;
+    }
+
+    uint8_t ciphertext[OQS_KEM_kyber_512_length_ciphertext];
+    int ret = OQS_KEM_kyber_512_encaps(ciphertext, secret.data(),
+                                       peer_key.data());
+    if (ret != OQS_SUCCESS) {
+      *out_alert = SSL_AD_DECODE_ERROR;
+      OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_ECPOINT);
+      return false;
+    }
+
+    if (!CBB_add_bytes(out_public_key, ciphertext, sizeof(ciphertext))) {
+      return false;
+    }
+
+    *out_secret = std::move(secret);
+    return true;
+  }
+
+  bool Finish(Array<uint8_t> *out_secret, uint8_t *out_alert,
+              Span<const uint8_t> peer_key) override {
+    *out_alert = SSL_AD_INTERNAL_ERROR;
+
+    Array<uint8_t> secret;
+    if (!secret.Init(OQS_KEM_kyber_512_length_shared_secret)) {
+      OPENSSL_PUT_ERROR(SSL, ERR_R_MALLOC_FAILURE);
+      return false;
+    }
+
+    if (peer_key.size() != OQS_KEM_kyber_512_length_ciphertext) {
+      *out_alert = SSL_AD_DECODE_ERROR;
+      OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_ECPOINT);
+      return false;
+    }
+
+    int ret = OQS_KEM_kyber_512_decaps(secret.data(), peer_key.data(),
+                                       kyber512_private_key_);
+    if (ret != OQS_SUCCESS) {
+      *out_alert = SSL_AD_DECODE_ERROR;
+      OPENSSL_PUT_ERROR(SSL, SSL_R_DECRYPTION_FAILED);
+      return false;
+    }
+
+    *out_secret = std::move(secret);
+    return true;
+  }
+
+ private:
+  uint8_t kyber512_private_key_[OQS_KEM_kyber_512_length_secret_key];
+};
+
 CONSTEXPR_ARRAY NamedGroup kNamedGroups[] = {
     {NID_secp224r1, SSL_CURVE_SECP224R1, "P-224", "secp224r1"},
     {NID_X9_62_prime256v1, SSL_CURVE_SECP256R1, "P-256", "prime256v1"},
@@ -306,6 +391,7 @@ CONSTEXPR_ARRAY NamedGroup kNamedGroups[] = {
     {NID_secp521r1, SSL_CURVE_SECP521R1, "P-521", "secp521r1"},
     {NID_X25519, SSL_CURVE_X25519, "X25519", "x25519"},
     {NID_CECPQ2, SSL_CURVE_CECPQ2, "CECPQ2", "CECPQ2"},
+    {NID_Kyber512, SSL_CURVE_KYBER512, "Kyber512", "Kyber512"},
 };
 
 }  // namespace
@@ -332,6 +418,8 @@ UniquePtr<SSLKeyShare> SSLKeyShare::Create(uint16_t group_id) {
       return UniquePtr<SSLKeyShare>(New<X25519KeyShare>());
     case SSL_CURVE_CECPQ2:
       return UniquePtr<SSLKeyShare>(New<CECPQ2KeyShare>());
+    case SSL_CURVE_KYBER512:
+      return UniquePtr<SSLKeyShare>(New<Kyber512KeyShare>());
     default:
       return nullptr;
   }

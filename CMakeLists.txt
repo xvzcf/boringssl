@@ -595,6 +595,14 @@ add_custom_command(
 
 add_library(crypto_test_data OBJECT crypto_test_data.cc)
 
+if(NOT DEFINED LIBOQS_DIR)
+  set(LIBOQS_DIR ${CMAKE_SOURCE_DIR}/oqs)
+endif()
+set(LIBOQS ${LIBOQS_DIR}/lib/liboqs.a)
+if(NOT EXISTS ${LIBOQS})
+  message(FATAL_ERROR "This fork requires liboqs.")
+endif()
+
 add_subdirectory(crypto)
 add_subdirectory(ssl)
 add_subdirectory(ssl/test)

@@ -1102,7 +1102,9 @@ class SSLKeyShare {
 struct NamedGroup {
   int nid;
   uint16_t group_id;
-  const char name[8], alias[11];
+  // NOTE(xvzcf): The size of the name[] array was increased from
+  // 8 to 9.
+  const char name[9], alias[11];
 };
 
 // NamedGroups returns all supported groups.

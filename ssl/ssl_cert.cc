@@ -1271,3 +1271,7 @@ int SSL_set1_delegated_credential(SSL *ssl, CRYPTO_BUFFER *dc, EVP_PKEY *pkey,
 int SSL_delegated_credential_used(const SSL *ssl) {
   return ssl->s3->delegated_credential_used;
 }
+
+int SSL_delegated_credential_used_for_certificate_verify(const SSL *ssl) {
+  return ssl->s3->delegated_credential_used_for_certificate_verify;
+}

@@ -172,6 +172,7 @@ SSL3_STATE::SSL3_STATE()
       initial_handshake_complete(false),
       session_reused(false),
       delegated_credential_used(false),
+      delegated_credential_used_for_certificate_verify(false),
       send_connection_binding(false),
       channel_id_valid(false),
       key_update_pending(false),

@@ -399,10 +399,13 @@ bool tls13_process_certificate_verify(SSL_HANDSHAKE *hs, const SSLMessage &msg) 
   }
   hs->new_session->peer_signature_algorithm = signature_algorithm;
 
-  if (ssl_verifying_with_dc(hs) && !ssl_dc_verify(hs)) {
-    OPENSSL_PUT_ERROR(SSL, SSL_R_CERTIFICATE_VERIFY_FAILED);
-    ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
-    return 0;
+  if (ssl_verifying_with_dc(hs)) {
+    if(!ssl_dc_verify(hs)) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_CERTIFICATE_VERIFY_FAILED);
+      ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+      return 0;
+    }
+    ssl->s3->delegated_credential_used_for_certificate_verify = true;
   }
 
   Array<uint8_t> input;

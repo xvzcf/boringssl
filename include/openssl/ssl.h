@@ -3207,9 +3207,13 @@ OPENSSL_EXPORT int SSL_set1_delegated_credential(
     SSL *ssl, CRYPTO_BUFFER *dc, EVP_PKEY *pkey,
     const SSL_PRIVATE_KEY_METHOD *key_method);
 
-// SSL_delegated_credential_used returns one if a delegated credential was used
+// SSL_delegated_credential_used returns one if a delegated credential was sent
 // and zero otherwise.
 OPENSSL_EXPORT int SSL_delegated_credential_used(const SSL *ssl);
+
+// SSL_delegated_credential_used_for_handshake returns one if a delegated
+// credential was used for the CertificateVerify message.
+OPENSSL_EXPORT int SSL_delegated_credential_used_for_certificate_verify(const SSL *ssl);
 
 
 // QUIC integration.

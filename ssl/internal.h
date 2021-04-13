@@ -2448,6 +2448,8 @@ struct SSL3_STATE {
   // the peer.
   bool delegated_credential_used : 1;
 
+  bool delegated_credential_used_for_certificate_verify : 1;
+
   bool send_connection_binding : 1;
 
   // In a client, this means that the server supported Channel ID and that a

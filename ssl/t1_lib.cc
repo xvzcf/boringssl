@@ -429,6 +429,10 @@ static const uint16_t kVerifySignatureAlgorithms[] = {
     SSL_SIGN_RSA_PSS_RSAE_SHA512,
     SSL_SIGN_RSA_PKCS1_SHA512,
 
+    // For delegated credentials.
+    SSL_SIGN_ED25519,
+    SSL_SIGN_ECDSA_SECP521R1_SHA512,
+
     // For now, SHA-1 is still accepted but least preferable.
     SSL_SIGN_RSA_PKCS1_SHA1,
 };
